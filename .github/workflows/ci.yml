@@ -303,44 +303,10 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           sudo usermod -aG kvm "$USER" || true
-      - name: Smoke-test QEMU launch
-        # Run QEMU directly to confirm it starts and prints version output.
+      - name: Verify KVM and QEMU
         run: |
           qemu-system-x86_64 --version
-          echo "KVM available: $(test -e /dev/kvm && echo yes || echo no)"
-          ls -la /dev/kvm 2>/dev/null || true
-          # Download the Alpine image and try launching QEMU directly
-          IMG_DIR="$HOME/.cache/linuxfs/alpine"
-          mkdir -p "$IMG_DIR"
-          IMG="$IMG_DIR/nocloud_alpine-3.21.6-x86_64-bios-cloudinit-r0.qcow2"
-          if [ ! -f "$IMG" ]; then
-            curl -fsSL -o "$IMG" \
-              "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.6-x86_64-bios-cloudinit-r0.qcow2"
-          fi
-          echo "Image size: $(du -sh "$IMG")"
-          # Build a cloud-init seed ISO the same way the Go code does
-          SEED_DIR="$HOME/.cache/linuxfs/cloud-init-seed-alpine"
-          SEED_ISO="$HOME/.cache/linuxfs/cloud-init-seed-alpine.iso"
-          mkdir -p "$SEED_DIR"
-          printf '#cloud-config\nusers:\n  - name: alpine\n    ssh_authorized_keys: []\n' > "$SEED_DIR/user-data"
-          printf 'instance-id: test\nlocal-hostname: test\n' > "$SEED_DIR/meta-data"
-          cloud-localds "$SEED_ISO" "$SEED_DIR/user-data" "$SEED_DIR/meta-data"
-          echo "Seed ISO: $(ls -lh "$SEED_ISO")"
-          # Try a minimal QEMU launch with seed ISO
-          timeout 5 qemu-system-x86_64 \
-            -accel kvm -m 512 -nographic -serial null -monitor none \
-            -drive "if=virtio,format=qcow2,file=$IMG" \
-            -drive "if=virtio,format=raw,file=$SEED_ISO,readonly=on" \
-            -netdev "user,id=net0" -device "virtio-net-pci,netdev=net0" \
-            2>&1 | head -20 || true
-          # Now try as root (same as the test)
-          echo "--- as root ---"
-          sudo timeout 5 qemu-system-x86_64 \
-            -accel kvm -m 512 -nographic -serial null -monitor none \
-            -drive "if=virtio,format=qcow2,file=$IMG" \
-            -drive "if=virtio,format=raw,file=$SEED_ISO,readonly=on" \
-            -netdev "user,id=net0" -device "virtio-net-pci,netdev=net0" \
-            2>&1 | head -20 || true
+          test -e /dev/kvm && echo "KVM: available" || echo "KVM: not available"
       - name: Run integration test (as root for NFS mount)
         working-directory: linuxfs
         # sudo -E preserves the Go environment set up by setup-go.

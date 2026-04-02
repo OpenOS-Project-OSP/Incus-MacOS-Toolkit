@@ -90,13 +90,14 @@ func TestVMBootMountNFS(t *testing.T) {
 	t.Log("Booting Alpine VM")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	// Build hostfwd rules: remap NFS port 2049 → testNFSPort so we don't
-	// require the privileged port 2049 on the host. Keep rpcbind (111) and
-	// mountd (20048) as-is since those are already > 1024.
+	// Forward NFS data port and mountd only.
+	// Port 111 (rpcbind) is skipped: it's a privileged port already bound
+	// by the host's rpcbind daemon, causing QEMU hostfwd to fail.
+	// The NFS v3 mount uses explicit port= and mountport= options so
+	// rpcbind is not consulted.
 	remapped := []string{
 		fmt.Sprintf("tcp::%d-:2049", testNFSPort),
 		"tcp::20048-:20048",
-		"tcp::111-:111",
 	}
 
 	v, err := vm.New(ctx, vm.Config{

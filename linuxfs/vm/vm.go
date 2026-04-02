@@ -179,7 +179,6 @@ func (v *VM) startQEMU() error {
 		"mem_mib", v.cfg.MemMiB,
 		"device", v.cfg.DevicePath,
 		"ssh_port", sshPort,
-		"args", args,
 	)
 
 	v.cmd = exec.CommandContext(v.ctx, binary, args...)
