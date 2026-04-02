@@ -49,8 +49,8 @@ func Execute() {
 	}
 
 	// Parse global flags that appear before the subcommand.
-	// e.g.: linuxfs-mac --vm-mem 2048 mount /dev/disk2s1
-	// Also handle subcommand-first style: linuxfs-mac mount --vm-mem 2048 /dev/disk2s1
+	// e.g.: linuxfs --vm-mem 2048 mount /dev/disk2s1
+	// Also handle subcommand-first style: linuxfs mount --vm-mem 2048 /dev/disk2s1
 	// We do a best-effort parse: stop at the first non-flag token.
 	_ = flag.CommandLine.Parse(os.Args[1:]) //nolint:errcheck
 
@@ -88,10 +88,10 @@ func Execute() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `linuxfs-mac — access Linux-native filesystems on macOS and Windows.
+	fmt.Fprintf(os.Stderr, `linuxfs — access Linux-native filesystems on macOS, Windows, and Linux.
 
 Usage:
-  linuxfs-mac [global flags] <subcommand> [flags] [args]
+  linuxfs [global flags] <subcommand> [flags] [args]
 
 Subcommands:
   mount     Mount a Linux filesystem and expose it as a network share
