@@ -177,12 +177,7 @@ func TestVMBootMountNFS(t *testing.T) {
 type minimalDebianProvider struct{ vm.DebianProvider }
 
 func (minimalDebianProvider) CloudInitPackages() []string { return nil }
-func (minimalDebianProvider) CloudInitRuncmds() []string {
-	return []string{
-		"systemctl enable ssh",
-		"systemctl start ssh",
-	}
-}
+func (minimalDebianProvider) CloudInitRuncmds() []string  { return nil }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 

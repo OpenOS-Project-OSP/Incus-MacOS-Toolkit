@@ -19,7 +19,7 @@ import (
 
 // cloudInitSeedVersion is incremented whenever the user-data template changes
 // in a way that requires existing cached seed ISOs to be regenerated.
-const cloudInitSeedVersion = 2
+const cloudInitSeedVersion = 3
 
 // EnsureCloudInitSeed creates a cloud-init seed ISO in dir if it doesn't
 // already exist. The ISO is named after the provider to avoid collisions
@@ -67,20 +67,10 @@ func buildUserData(p Provider, sshPubKey string) string {
 		pkgLines.WriteString(fmt.Sprintf("  - %s\n", pkg))
 	}
 
-	// SSH startup goes in bootcmd (runs every boot, before cloud-init modules)
-	// so the daemon is available on every VM start, not just the first.
-	// Provider runcmds (e.g. rc-update add sshd default) go in runcmd
-	// (first-boot only) to register the service for future boots.
 	var runcmdLines strings.Builder
 	for _, cmd := range p.CloudInitRuncmds() {
 		runcmdLines.WriteString(fmt.Sprintf("  - %s\n", cmd))
 	}
-
-	// bootcmd: start SSH on every boot regardless of init system.
-	bootcmd := `bootcmd:
-  - [ sh, -c, "command -v rc-service && rc-service sshd start 2>/dev/null || true" ]
-  - [ sh, -c, "command -v systemctl && systemctl start ssh 2>/dev/null || systemctl start sshd 2>/dev/null || true" ]
-`
 
 	// Only include packages/runcmd sections when non-empty to avoid
 	// cloud-init schema warnings on empty lists.
@@ -105,13 +95,11 @@ ssh_pwauth: false
 disable_root: false
 
 %s
-%s
 %s`,
 		p.DefaultUser(),
 		p.DefaultShell(),
 		sshPubKey,
 		pkgSection,
-		bootcmd,
 		runcmdSection,
 	)
 }

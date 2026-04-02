@@ -152,13 +152,18 @@ func (v *VM) startQEMU() error {
 
 	serialDev := "null"
 	if v.cfg.Debug {
-		serialDev = "stdio"
+		// chardev:serial0 writes to stderr so it doesn't interfere with
+		// the Go test runner capturing stdout.
+		serialDev = "file:/dev/stderr"
 	}
 	args := []string{
 		"-accel", accel,
 		"-m", fmt.Sprintf("%d", v.cfg.MemMiB),
 		"-nographic",
 		"-serial", serialDev,
+		// Always disable the QEMU monitor: with -nographic the monitor
+		// defaults to stdio, and reading EOF from /dev/null causes QEMU
+		// to exit immediately.
 		"-monitor", "none",
 		// Boot explicitly from the first virtio disk (the VM root image).
 		"-boot", "order=c,strict=on",
