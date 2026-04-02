@@ -1,0 +1,4 @@
+linuxfs-mac
+linuxfs-mac-*
+*.qcow2
+*.img
