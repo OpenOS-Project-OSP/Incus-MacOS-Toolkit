@@ -14,10 +14,10 @@ type AlpineProvider struct{}
 func (AlpineProvider) Name() string { return "alpine" }
 
 func (AlpineProvider) ImageURL(arch Arch) string {
-	// URL format changed in Alpine 3.21: generic_alpine-VERSION-ARCH-FIRMWARE-cloudinit-r0.qcow2
+	// Use the nocloud variant: designed for local QEMU use with a seed ISO.
 	// x86_64 uses BIOS; aarch64 uses UEFI.
 	return fmt.Sprintf(
-		"https://dl-cdn.alpinelinux.org/alpine/v%s/releases/cloud/generic_alpine-%s-%s-%s-cloudinit-r0.qcow2",
+		"https://dl-cdn.alpinelinux.org/alpine/v%s/releases/cloud/nocloud_alpine-%s-%s-%s-cloudinit-r0.qcow2",
 		alpineVersion[:4], alpineVersion, arch.AlpineString(), arch.AlpineFirmware(),
 	)
 }
