@@ -38,7 +38,7 @@ UNAME_S := $(shell uname -s 2>/dev/null || echo Linux)
         linuxfs linuxfs-clean linuxfs-install linuxfs-test \
         compat compat-clean compat-install \
         btrfs-dwarfs btrfs-dwarfs-clean btrfs-dwarfs-install btrfs-dwarfs-test \
-        btrfs-devel-sync bdfs-vm-install \
+        btrfs-devel-sync bdfs-vm-install bdfs-vm-provision \
         macos-vm-firmware macos-vm-opencore macos-vm-disk
 
 # ── Top-level ────────────────────────────────────────────────────────────────
@@ -130,6 +130,15 @@ bdfs-vm-install:
 	    VM_SSH_PORT=$(VM_SSH_PORT) \
 	    VM_USER=$(VM_USER) \
 	    $(if $(VM_SSH_KEY),VM_SSH_KEY=$(VM_SSH_KEY),)
+
+# Start a throwaway VM, install bdfs, shut it down — no manual VM management needed.
+bdfs-vm-provision:
+	$(MAKE) -C btrfs-dwarfs bdfs-vm-provision \
+	    VM_SSH_PORT=$(VM_SSH_PORT) \
+	    VM_USER=$(VM_USER) \
+	    VM_DISTRO=$(if $(VM_DISTRO),$(VM_DISTRO),alpine) \
+	    $(if $(VM_SSH_KEY),VM_SSH_KEY=$(VM_SSH_KEY),) \
+	    $(if $(VM_DATA_DIR),VM_DATA_DIR=$(VM_DATA_DIR),)
 
 # ── btrfs-devel sync ─────────────────────────────────────────────────────────
 

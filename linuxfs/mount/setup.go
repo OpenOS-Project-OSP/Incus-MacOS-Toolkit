@@ -49,7 +49,7 @@ type VMRunner interface {
 func HostFwds(backend Backend) []string {
 	switch backend {
 	case BackendNFS:
-		// NFS: data port + rpcbind (111) + mountd (20048)
+		// NFS: data port + rpcbind (111) + mountd (20048, pinned in setup script)
 		return []string{
 			fmt.Sprintf("tcp::%d-:%d", portNFS, portNFS),
 			"tcp::20048-:20048",
@@ -69,6 +69,9 @@ func HostFwds(backend Backend) []string {
 			"tcp::40003-:40003",
 			"tcp::40004-:40004",
 		}
+	case BackendSSHFS:
+		// SSHFS uses the existing SSH tunnel — no extra ports needed.
+		return nil
 	default:
 		return nil
 	}
@@ -115,9 +118,11 @@ func Setup(v VMRunner, opts MountOptions) (shareURL string, err error) {
 		return "", fmt.Errorf("in-VM setup: %w\nOutput:\n%s", err, out)
 	}
 
-	// Wait for the share server port to open inside the VM.
-	if err := v.WaitForPort(sharePort, 30*time.Second); err != nil {
-		return "", fmt.Errorf("share server did not start: %w", err)
+	// Wait for the share server port to open inside the VM (skip for sshfs/mount-only).
+	if sharePort != 0 {
+		if err := v.WaitForPort(sharePort, 30*time.Second); err != nil {
+			return "", fmt.Errorf("share server did not start: %w", err)
+		}
 	}
 
 	cfg := Config{
@@ -200,6 +205,7 @@ vgchange -ay %s
 	fmt.Fprintf(&b, "%s\n", mountCmd)
 
 	// ── Step 4: Share server ─────────────────────────────────────────────────
+	// Empty backend means mount-only (used by sshfs path) — skip share server.
 	var sharePort uint16
 	switch opts.Backend {
 	case BackendNFS:
@@ -215,8 +221,11 @@ vgchange -ay %s
 	case BackendFTP:
 		sharePort = portFTP
 		b.WriteString(buildFTPSetup(opts))
+	case BackendSSHFS, "":
+		// sshfs or mount-only: no share server needed inside the VM.
+		sharePort = 0
 	default:
-		// Default to NFS — works on all distros without extra packages.
+		// Unknown backend — default to NFS.
 		sharePort = portNFS
 		b.WriteString(buildNFSSetup(opts))
 	}
@@ -238,6 +247,21 @@ if ! command -v exportfs >/dev/null 2>&1; then
         dnf install -y nfs-utils
     fi
 fi
+
+# Pin rpcbind to port 111 and mountd to port 20048 so QEMU hostfwd rules
+# match deterministically. Without pinning, mountd picks a random port on
+# each start and the forwarded port 20048 would be unreachable.
+if [ -f /etc/nfs.conf ]; then
+    # nfs-utils >= 2.x (Debian/Ubuntu/Fedora)
+    grep -q '^\[mountd\]' /etc/nfs.conf 2>/dev/null || cat >> /etc/nfs.conf <<'NFSEOF'
+[mountd]
+port = 20048
+NFSEOF
+elif [ -f /etc/conf.d/nfs ]; then
+    # Alpine OpenRC
+    grep -q 'MOUNTD_PORT' /etc/conf.d/nfs 2>/dev/null || \
+        echo 'MOUNTD_PORT=20048' >> /etc/conf.d/nfs
+fi
 `)
 	listenIP := opts.ListenIP
 	if listenIP == "" || listenIP == "0.0.0.0" {
@@ -249,14 +273,16 @@ fi
 	}
 	fmt.Fprintf(&b, `
 # Export the mount point.
+# fsid=0 makes /mnt/linuxfs the NFS root so the client mounts path /.
 grep -qF '%s' /etc/exports 2>/dev/null || \
     echo '%s %s(rw,sync,no_subtree_check,no_root_squash,fsid=0%s)' >> /etc/exports
 
 # Start / reload NFS server.
 if command -v rc-service >/dev/null 2>&1; then
-    rc-service nfs start 2>/dev/null || rc-service nfs restart 2>/dev/null || true
     rc-service rpcbind start 2>/dev/null || true
+    rc-service nfs start 2>/dev/null || rc-service nfs restart 2>/dev/null || true
 elif command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now rpcbind 2>/dev/null || true
     systemctl enable --now nfs-kernel-server 2>/dev/null || \
     systemctl enable --now nfs-server 2>/dev/null || true
 fi
@@ -378,6 +404,34 @@ elif command -v systemctl >/dev/null 2>&1; then
 fi
 `, writeFlag, vmMountPoint, portFTP)
 	return b.String()
+}
+
+// InVMMountScript returns a shell script that mounts the device inside the VM
+// without starting any share server. Used by the sshfs backend.
+func InVMMountScript(opts MountOptions) string {
+	// Reuse the first three steps of buildSetupScript (LUKS, LVM, mount)
+	// but stop before the share server section.
+	script, _ := buildSetupScript(MountOptions{
+		InVMDevice: opts.InVMDevice,
+		LUKS:       opts.LUKS,
+		LVM:        opts.LVM,
+		FSType:     opts.FSType,
+		MountOpts:  opts.MountOpts,
+		ReadOnly:   opts.ReadOnly,
+		// Backend left empty so buildSetupScript skips the share server block.
+		Backend: "",
+	})
+	return script
+}
+
+// InVMUnmountScript returns a shell script that unmounts the device inside
+// the VM without touching any share server. Used by the sshfs backend.
+func InVMUnmountScript(opts MountOptions) string {
+	return buildTeardownScript(MountOptions{
+		LUKS:    opts.LUKS,
+		LVM:     opts.LVM,
+		Backend: "", // no share server to stop
+	})
 }
 
 // buildTeardownScript returns the shell script that stops the share server

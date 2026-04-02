@@ -28,7 +28,7 @@ func Execute() {
 	flag.StringVar(&flagDataDir, "data-dir", "",
 		"Directory for VM image and state (default: OS cache dir)")
 	flag.StringVar(&flagBackend, "backend", "",
-		"File share backend: smb, afp, nfs, ftp (auto-detected by OS if empty)")
+		"File share backend: sshfs (default on Linux), afp (macOS), smb (Windows), nfs, ftp")
 	flag.StringVar(&flagListenIP, "listen-ip", "127.0.0.1",
 		"IP address the share server listens on")
 	flag.StringVar(&flagDistro, "distro", "alpine",
@@ -76,6 +76,10 @@ func Execute() {
 		runShell(rest)
 	case "bdfs":
 		runBdfs(rest)
+	case "clean":
+		runClean(rest)
+	case "update-images":
+		runUpdateImages(rest)
 	case "version":
 		runVersion()
 	case "-h", "--help", "help":
@@ -99,7 +103,9 @@ Subcommands:
   list      List currently mounted filesystems
   shell     Open a shell inside the VM for a device
   bdfs      Proxy btrfs-dwarfs-framework CLI commands into the VM
-  version   Print version information
+  clean         Remove stale entries from the mount state file
+  update-images Check for and download newer VM images
+  version       Print version information
 
 Global flags:
 `)

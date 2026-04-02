@@ -19,13 +19,15 @@ import (
 type Backend string
 
 const (
-	BackendAFP Backend = "afp" // Apple Filing Protocol — macOS default
-	BackendNFS Backend = "nfs" // NFS — macOS alternative (anylinuxfs default)
-	BackendSMB Backend = "smb" // SMB/CIFS — Windows default
-	BackendFTP Backend = "ftp" // FTP — cross-platform fallback
+	BackendAFP   Backend = "afp"   // Apple Filing Protocol — macOS default
+	BackendNFS   Backend = "nfs"   // NFS — macOS alternative
+	BackendSMB   Backend = "smb"   // SMB/CIFS — Windows default
+	BackendFTP   Backend = "ftp"   // FTP — cross-platform fallback
+	BackendSSHFS Backend = "sshfs" // SSHFS — no root, no share server, all OSes
 )
 
 // DefaultBackend returns the recommended backend for the current OS.
+// SSHFS is preferred on Linux (no root required); AFP on macOS; SMB on Windows.
 func DefaultBackend() Backend {
 	switch runtime.GOOS {
 	case "darwin":
@@ -33,6 +35,10 @@ func DefaultBackend() Backend {
 	case "windows":
 		return BackendSMB
 	default:
+		// Linux: prefer sshfs if available, fall back to FTP.
+		if SSHFSAvailable() {
+			return BackendSSHFS
+		}
 		return BackendFTP
 	}
 }
@@ -52,10 +58,14 @@ func (c Config) Validate() error {
 		if runtime.GOOS != "darwin" {
 			return fmt.Errorf("AFP backend is only supported on macOS")
 		}
+	case BackendSSHFS:
+		if !SSHFSAvailable() {
+			return fmt.Errorf("sshfs not found; install it (see: linuxfs mount --help)")
+		}
 	case BackendNFS, BackendSMB, BackendFTP:
 		// supported everywhere
 	default:
-		return fmt.Errorf("unknown backend %q; supported: afp, nfs, smb, ftp", c.Backend)
+		return fmt.Errorf("unknown backend %q; supported: afp, nfs, smb, ftp, sshfs", c.Backend)
 	}
 	return nil
 }

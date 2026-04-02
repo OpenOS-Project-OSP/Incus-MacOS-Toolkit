@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/linuxfs-mac/linuxfs-mac/mount"
 	"github.com/linuxfs-mac/linuxfs-mac/vm"
@@ -129,7 +130,7 @@ Flags:
 		_ = v.Stop()
 	}()
 
-	// ── In-VM mount + share server ────────────────────────────────────────
+	// ── In-VM mount + share server (or sshfs) ────────────────────────────
 	mountOpts_ := mount.MountOptions{
 		// The pass-through device is always the third virtio disk in the VM.
 		InVMDevice: "/dev/vdc",
@@ -142,14 +143,61 @@ Flags:
 		ListenIP:   listenIP,
 	}
 
-	fmt.Println("Setting up filesystem and share server inside VM ...")
-	shareURL, err := mount.Setup(v, mountOpts_)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
-		os.Exit(1)
+	var shareURL string
+
+	if backend == mount.BackendSSHFS {
+		// SSHFS: mount the VM filesystem directly over the SSH tunnel.
+		// No share server needed — just mount /mnt/linuxfs inside the VM
+		// first, then sshfs it to the host mountpoint.
+		fmt.Println("Mounting filesystem inside VM ...")
+		if out, err := v.RunScript(mount.InVMMountScript(mountOpts_)); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: in-VM mount: %v\nOutput:\n%s\n", err, out)
+			os.Exit(1)
+		}
+		mp := *mountPoint
+		if mp == "" {
+			mp = "/tmp/linuxfs-" + sanitize(device)
+		}
+		fmt.Printf("Mounting via sshfs at %s ...\n", mp)
+		sshfsOpts := mount.SSHFSOptions{
+			SSHPort:    v.SSHPort,
+			User:       v.User(),
+			KeyPath:    v.KeyPath(),
+			MountPoint: mp,
+			ReadOnly:   *readOnly,
+		}
+		if err := mount.MountSSHFS(sshfsOpts); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: sshfs: %v\n", err)
+			os.Exit(1)
+		}
+		shareURL = "sshfs://" + mp
+		*mountPoint = mp
+	} else {
+		fmt.Println("Setting up filesystem and share server inside VM ...")
+		var err error
+		shareURL, err = mount.Setup(v, mountOpts_)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			os.Exit(1)
+		}
+
+		if *mountPoint != "" {
+			fmt.Printf("Auto-mounting at %s ...\n", *mountPoint)
+			if err := mount.AutoMount(shareURL, *mountPoint); err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: auto-mount failed: %v\n", err)
+				fmt.Printf("Connect manually: open %s\n", shareURL)
+			}
+		} else if runtime.GOOS == "darwin" {
+			fmt.Printf("Opening share in Finder: %s\n", shareURL)
+			if err := mount.AutoMount(shareURL, ""); err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
+			}
+		} else {
+			fmt.Printf("Connect to: %s\n", shareURL)
+		}
 	}
 
-	// ── Persist state for 'list' and 'unmount' ────────────────────────────
+	// ── Persist state for 'list', 'unmount', and 'clean' ─────────────────
 	records, _ := loadMounts()
 	records = append(records, MountRecord{
 		Device:     device,
@@ -163,38 +211,31 @@ Flags:
 		fmt.Fprintf(os.Stderr, "WARNING: could not save mount state: %v\n", err)
 	}
 
-	fmt.Printf("\nShare URL: %s\n", shareURL)
+	fmt.Printf("\nMounted: %s\n", shareURL)
+	fmt.Println("Press Ctrl+C to unmount and stop the VM.")
 
-	// ── Auto-mount on host ────────────────────────────────────────────────
-	if *mountPoint != "" {
-		fmt.Printf("Auto-mounting at %s ...\n", *mountPoint)
-		if err := mount.AutoMount(shareURL, *mountPoint); err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: auto-mount failed: %v\n", err)
-			fmt.Printf("Connect manually: open %s\n", shareURL)
-		}
-	} else if runtime.GOOS == "darwin" {
-		fmt.Printf("Opening share in Finder: %s\n", shareURL)
-		if err := mount.AutoMount(shareURL, ""); err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
-		}
-	} else {
-		fmt.Printf("Connect to: %s\n", shareURL)
-	}
-
-	fmt.Println("\nPress Ctrl+C to unmount and stop the VM.")
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	fmt.Println("\nShutting down ...")
 
-	// ── Teardown: unmount host share, stop share server, unmount in VM ────
-	if *mountPoint != "" {
-		if err := mount.AutoUnmount(*mountPoint); err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: host unmount: %v\n", err)
+	// ── Teardown ──────────────────────────────────────────────────────────
+	if backend == mount.BackendSSHFS {
+		if err := mount.UnmountSSHFS(*mountPoint); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: sshfs unmount: %v\n", err)
 		}
-	}
-	if err := mount.Teardown(v, mountOpts_); err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: in-VM teardown: %v\n", err)
+		if out, err := v.RunScript(mount.InVMUnmountScript(mountOpts_)); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: in-VM unmount: %v\nOutput:\n%s\n", err, out)
+		}
+	} else {
+		if *mountPoint != "" {
+			if err := mount.AutoUnmount(*mountPoint); err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: host unmount: %v\n", err)
+			}
+		}
+		if err := mount.Teardown(v, mountOpts_); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: in-VM teardown: %v\n", err)
+		}
 	}
 
 	// Remove from state file.
@@ -209,20 +250,114 @@ Flags:
 	}
 }
 
+// sanitize converts a device path to a safe filename component.
+func sanitize(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			out = append(out, c)
+		} else {
+			out = append(out, '-')
+		}
+	}
+	return string(out)
+}
+
 func runUnmount(args []string) {
 	fs := flag.NewFlagSet("unmount", flag.ExitOnError)
+	noStopVM := fs.Bool("no-stop-vm", false, "Unmount the share but leave the VM running")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, `Usage: linuxfs unmount <mountpoint|device>
+
+Unmount a share and stop the associated VM.
+
+The argument may be either the host mountpoint (e.g. /Volumes/linuxfs)
+or the original device path (e.g. /dev/disk2s1).
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
+
 	if err := fs.Parse(args); err != nil {
 		os.Exit(1)
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: linuxfs unmount <mountpoint>")
+		fs.Usage()
 		os.Exit(1)
 	}
 	target := fs.Arg(0)
-	fmt.Printf("Unmounting %s ...\n", target)
-	if err := mount.AutoUnmount(target); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
-		os.Exit(1)
+
+	// Look up the mount record so we can stop the VM.
+	records, _ := loadMounts()
+	var rec *MountRecord
+	for i := range records {
+		if records[i].MountPoint == target || records[i].Device == target {
+			rec = &records[i]
+			break
+		}
 	}
+
+	// Unmount the host share.
+	if rec != nil && rec.Backend == string(mount.BackendSSHFS) {
+		fmt.Printf("Unmounting sshfs %s ...\n", target)
+		if err := mount.UnmountSSHFS(target); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
+		}
+	} else {
+		mp := target
+		if rec != nil && rec.MountPoint != "" {
+			mp = rec.MountPoint
+		}
+		if mp != "" {
+			fmt.Printf("Unmounting %s ...\n", mp)
+			if err := mount.AutoUnmount(mp); err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
+			}
+		}
+	}
+
+	// Stop the VM process.
+	if !*noStopVM && rec != nil && rec.VMPid > 0 {
+		fmt.Printf("Stopping VM (pid %d) ...\n", rec.VMPid)
+		if err := stopProcess(rec.VMPid); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: could not stop VM: %v\n", err)
+		}
+	}
+
+	// Remove from state file.
+	if rec != nil {
+		var updated []MountRecord
+		for _, r := range records {
+			if r.Device != rec.Device {
+				updated = append(updated, r)
+			}
+		}
+		_ = saveMounts(updated)
+	}
+
 	fmt.Println("Done.")
+}
+
+// stopProcess sends SIGTERM to pid, waits up to 5 s, then SIGKILL.
+func stopProcess(pid int) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		return err
+	}
+	// Poll for up to 5 seconds.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			return nil // process gone
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	// Still alive — force kill.
+	return proc.Kill()
 }

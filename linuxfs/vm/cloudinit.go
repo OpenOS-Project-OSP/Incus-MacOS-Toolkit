@@ -65,11 +65,20 @@ func buildUserData(p Provider, sshPubKey string) string {
 		pkgLines.WriteString(fmt.Sprintf("  - %s\n", pkg))
 	}
 
-	// Build runcmd list.
+	// SSH startup goes in bootcmd (runs every boot, before cloud-init modules)
+	// so the daemon is available on every VM start, not just the first.
+	// Provider runcmds (e.g. rc-update add sshd default) go in runcmd
+	// (first-boot only) to register the service for future boots.
 	var runcmdLines strings.Builder
 	for _, cmd := range p.CloudInitRuncmds() {
 		runcmdLines.WriteString(fmt.Sprintf("  - %s\n", cmd))
 	}
+
+	// bootcmd: start SSH on every boot regardless of init system.
+	bootcmd := `bootcmd:
+  - [ sh, -c, "command -v rc-service && rc-service sshd start 2>/dev/null || true" ]
+  - [ sh, -c, "command -v systemctl && systemctl start ssh 2>/dev/null || systemctl start sshd 2>/dev/null || true" ]
+`
 
 	return fmt.Sprintf(`#cloud-config
 users:
@@ -86,6 +95,7 @@ disable_root: false
 
 packages:
 %s
+%s
 runcmd:
 %s`,
 		p.DefaultUser(),
@@ -93,6 +103,7 @@ runcmd:
 		vmPassword,
 		sshPubKey,
 		pkgLines.String(),
+		bootcmd,
 		runcmdLines.String(),
 	)
 }

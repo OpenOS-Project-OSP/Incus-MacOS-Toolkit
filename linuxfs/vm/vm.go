@@ -107,6 +107,12 @@ func (v *VM) Pid() int {
 	return 0
 }
 
+// KeyPath returns the path to the SSH private key used to connect to the VM,
+// or "" if the default SSH agent / key is used.
+func (v *VM) KeyPath() string {
+	return v.sshOpts().KeyPath
+}
+
 func (v *VM) startQEMU() error {
 	binary := v.arch.QEMUBinary()
 

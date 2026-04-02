@@ -37,7 +37,7 @@ VM_SSH_OPTS  = -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
 
 .PHONY: all kernel kernel-devel userspace install install-kernel install-userspace \
         clean clean-kernel clean-userspace test check fmt \
-        bdfs-vm-install
+        bdfs-vm-install bdfs-vm-provision
 
 all: kernel userspace
 
@@ -137,6 +137,39 @@ bdfs-vm-install:
 	ssh $(VM_SSH_OPTS) $(VM_USER)@127.0.0.1 \
 	    "sudo sh /opt/bdfs-src/scripts/vm-install.sh"
 	@echo "bdfs-vm-install complete."
+
+# Start a throwaway VM, install bdfs, then shut it down.
+# This is a convenience wrapper for CI or first-time setup.
+# The VM image is the linuxfs cache image for the selected distro.
+#
+# Usage:
+#   make bdfs-vm-provision                          # Alpine, port 10022
+#   make bdfs-vm-provision VM_DISTRO=debian
+#   make bdfs-vm-provision VM_DISTRO=ubuntu VM_SSH_PORT=10023
+#
+# Requires: linuxfs binary on PATH (built with `make linuxfs` from repo root)
+
+VM_DISTRO   ?= alpine
+VM_DATA_DIR ?=
+
+bdfs-vm-provision:
+	@echo "Starting $(VM_DISTRO) VM for bdfs provisioning ..."
+	@# Start VM in background via linuxfs shell with /dev/null device.
+	@# linuxfs writes the SSH port to stdout; we capture it.
+	linuxfs --distro $(VM_DISTRO) \
+	    $(if $(VM_DATA_DIR),--data-dir $(VM_DATA_DIR),) \
+	    shell /dev/null &
+	@echo "Waiting for VM to be ready on port $(VM_SSH_PORT) ..."
+	@for i in $$(seq 1 30); do \
+	    nc -z 127.0.0.1 $(VM_SSH_PORT) 2>/dev/null && break; \
+	    sleep 2; \
+	done
+	@echo "VM ready. Running bdfs-vm-install ..."
+	$(MAKE) bdfs-vm-install VM_SSH_PORT=$(VM_SSH_PORT) VM_USER=$(VM_USER) \
+	    $(if $(VM_SSH_KEY),VM_SSH_KEY=$(VM_SSH_KEY),)
+	@echo "Stopping VM ..."
+	@ssh $(VM_SSH_OPTS) $(VM_USER)@127.0.0.1 "sudo poweroff" 2>/dev/null || true
+	@echo "bdfs-vm-provision complete."
 
 # ── Formatting ───────────────────────────────────────────────────────────────
 
