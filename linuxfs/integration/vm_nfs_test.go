@@ -101,7 +101,7 @@ func TestVMBootMountNFS(t *testing.T) {
 	}
 
 	v, err := vm.New(ctx, vm.Config{
-		Provider:      vm.DebianProvider{},
+		Provider:      minimalDebianProvider{},
 		MemMiB:        testMemMiB,
 		DevicePath:    imgPath,
 		SSHPort:       uint16(testSSHPort),
@@ -165,6 +165,22 @@ func TestVMBootMountNFS(t *testing.T) {
 		t.Fatalf("sentinel mismatch: got %q, want %q", got, testSentinel)
 	}
 	t.Log("NFS integration test passed")
+}
+
+// ── test provider ─────────────────────────────────────────────────────────────
+
+// minimalDebianProvider wraps DebianProvider but installs no packages on first
+// boot so SSH starts immediately without waiting for apt to finish.
+// nfs-kernel-server and e2fsprogs are pre-installed in the Debian genericcloud
+// base image, so the test doesn't need to install anything extra.
+type minimalDebianProvider struct{ vm.DebianProvider }
+
+func (minimalDebianProvider) CloudInitPackages() []string { return nil }
+func (minimalDebianProvider) CloudInitRuncmds() []string {
+	return []string{
+		"systemctl enable ssh",
+		"systemctl start ssh",
+	}
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

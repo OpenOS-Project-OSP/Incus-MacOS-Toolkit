@@ -205,10 +205,10 @@ func (v *VM) startQEMU() error {
 	// promptly when QEMU exits, allowing waitForSSH to detect early exits.
 	go func() { _ = v.cmd.Wait() }()
 
-	if err := v.waitForSSH(240 * time.Second); err != nil {
+	if err := v.waitForSSH(300 * time.Second); err != nil {
 		return err
 	}
-	return v.waitForCloudInit(180 * time.Second)
+	return v.waitForCloudInit(120 * time.Second)
 }
 
 // waitForSSH polls the SSH port until it accepts connections or timeout expires.
