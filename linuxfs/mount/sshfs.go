@@ -20,10 +20,7 @@ import (
 	"runtime"
 )
 
-const (
-	BackendSSHFS Backend = "sshfs"
-	vmSSHFSPath         = "/mnt/linuxfs"
-)
+const vmSSHFSPath = "/mnt/linuxfs"
 
 // SSHFSOptions holds the parameters needed to mount via SSHFS.
 type SSHFSOptions struct {
