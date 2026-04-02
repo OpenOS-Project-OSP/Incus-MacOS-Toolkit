@@ -1,4 +1,4 @@
-# libkrun backend (Apple Silicon)
+# libkrun
 
 [libkrun](https://github.com/containers/libkrun) is a lightweight hypervisor
 library that uses Apple's `Hypervisor.framework` on Apple Silicon. It provides
@@ -7,36 +7,22 @@ used by [anylinuxfs](https://github.com/nohajc/anylinuxfs).
 
 ## Status
 
-The libkrun backend is a stub in the current release. The QEMU backend works
-on both Intel and Apple Silicon Macs.
+**Not implemented.** The QEMU backend is the only supported hypervisor.
+It works on Intel and Apple Silicon Macs (using HVF acceleration), Linux
+(KVM), and Windows (WHPX).
 
-## Building with libkrun support
+libkrun would require CGo and a dynamic library dependency, which conflicts
+with the project's goal of a single static binary with no external runtime
+dependencies. If you need lower VM overhead on Apple Silicon, reducing
+`--vm-mem` (default: 512 MiB) is the practical lever — most filesystem
+operations work fine at 256 MiB.
 
-libkrun requires CGo and the libkrun dynamic library:
+## Adding libkrun support
 
-```bash
-# Install libkrun (Apple Silicon only)
-brew install libkrun   # if available, or build from source:
-# git clone https://github.com/containers/libkrun
-# cd libkrun && make && sudo make install
+If you want to contribute a libkrun backend, the integration point is the
+`vm.Provider` interface in `vm/provider.go`. A libkrun backend would
+implement a separate `vm.VM`-equivalent that calls the libkrun C API via
+CGo instead of shelling out to `qemu-system-*`.
 
-# Build linuxfs-mac with libkrun
-CGO_ENABLED=1 go build -tags libkrun -o linuxfs-mac .
-
-# Use the libkrun backend
-linuxfs-mac mount /dev/disk2s1 --backend nfs --vm-backend libkrun
-```
-
-## Architecture
-
-With libkrun, the VM lifecycle is:
-
-1. `krun_create_ctx()` — allocate a VM context
-2. `krun_set_vm_config()` — set vCPUs and RAM
-3. `krun_set_root_disk()` — attach Alpine root image
-4. `krun_add_disk()` — pass through the target block device
-5. `krun_set_net_cfg()` — configure virtio-net
-6. `krun_start_enter()` — start the VM (blocks until shutdown)
-
-The NFS server runs inside the Alpine VM and is exposed on a `vmnet` interface
-visible only to the host, matching the anylinuxfs architecture.
+The NFS/AFP/SMB share server logic in `mount/setup.go` is hypervisor-agnostic
+and would work unchanged with a libkrun backend.
