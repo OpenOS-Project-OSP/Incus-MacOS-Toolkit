@@ -254,11 +254,15 @@ func (v *VM) waitForCloudInit(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
 	for time.Now().Before(deadline) {
-		// Try running a trivial sudo command. Once cloud-init has created
-		// the user with NOPASSWD:ALL, this succeeds.
-		if _, err := v.Run("sudo true"); err == nil {
-			v.logger.Info("cloud-init ready")
-			return nil
+		// Log what user we are and whether sudo exists, for diagnosis.
+		if out, err := v.Run("id && command -v sudo || echo 'no sudo'"); err == nil {
+			v.logger.Info("cloud-init probe", "out", out)
+			// Try running a trivial sudo command. Once cloud-init has created
+			// the user with NOPASSWD:ALL, this succeeds.
+			if _, err2 := v.Run("sudo true"); err2 == nil {
+				v.logger.Info("cloud-init ready")
+				return nil
+			}
 		}
 		time.Sleep(3 * time.Second)
 	}
