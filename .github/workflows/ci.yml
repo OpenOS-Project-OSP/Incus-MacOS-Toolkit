@@ -318,10 +318,27 @@ jobs:
               "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.6-x86_64-bios-cloudinit-r0.qcow2"
           fi
           echo "Image size: $(du -sh "$IMG")"
-          # Try a minimal QEMU launch (exits immediately, just checks args)
+          # Build a cloud-init seed ISO the same way the Go code does
+          SEED_DIR="$HOME/.cache/linuxfs/cloud-init-seed-alpine"
+          SEED_ISO="$HOME/.cache/linuxfs/cloud-init-seed-alpine.iso"
+          mkdir -p "$SEED_DIR"
+          printf '#cloud-config\nusers:\n  - name: alpine\n    ssh_authorized_keys: []\n' > "$SEED_DIR/user-data"
+          printf 'instance-id: test\nlocal-hostname: test\n' > "$SEED_DIR/meta-data"
+          cloud-localds "$SEED_ISO" "$SEED_DIR/user-data" "$SEED_DIR/meta-data"
+          echo "Seed ISO: $(ls -lh "$SEED_ISO")"
+          # Try a minimal QEMU launch with seed ISO
           timeout 5 qemu-system-x86_64 \
             -accel kvm -m 512 -nographic -serial null -monitor none \
             -drive "if=virtio,format=qcow2,file=$IMG" \
+            -drive "if=virtio,format=raw,file=$SEED_ISO,readonly=on" \
+            -netdev "user,id=net0" -device "virtio-net-pci,netdev=net0" \
+            2>&1 | head -20 || true
+          # Now try as root (same as the test)
+          echo "--- as root ---"
+          sudo timeout 5 qemu-system-x86_64 \
+            -accel kvm -m 512 -nographic -serial null -monitor none \
+            -drive "if=virtio,format=qcow2,file=$IMG" \
+            -drive "if=virtio,format=raw,file=$SEED_ISO,readonly=on" \
             -netdev "user,id=net0" -device "virtio-net-pci,netdev=net0" \
             2>&1 | head -20 || true
       - name: Run integration test (as root for NFS mount)
