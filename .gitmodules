@@ -1,0 +1,3 @@
+[submodule "compat/bsdcoreutils/upstream"]
+	path = compat/bsdcoreutils/upstream
+	url = https://github.com/DiegoMagdaleno/BSDCoreUtils.git

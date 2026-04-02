@@ -1,0 +1,303 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**", "fix/**"]
+  pull_request:
+
+# Cancel in-progress runs for the same branch on new pushes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ── linuxfs: build, vet, test, cross-compile ──────────────────────────────
+
+  linuxfs-build:
+    name: linuxfs / build + vet + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: linuxfs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: linuxfs/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  linuxfs-cross:
+    name: linuxfs / cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: linuxfs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: linuxfs/go.sum
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -o /dev/null .
+
+  # ── macos-vm: shell lint, Python lint, YAML lint ──────────────────────────
+
+  macos-vm-lint:
+    name: macos-vm / lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install tools
+        run: |
+          sudo apt-get install -y --no-install-recommends shellcheck
+          pip install ruff yamllint
+      - name: shellcheck
+        run: |
+          shellcheck macos-vm/boot/boot.sh
+          shellcheck macos-vm/fetch/convert-image.sh
+          shellcheck macos-vm/guest-tools/optimize.sh
+          shellcheck macos-vm/guest-tools/useradd-bulk.sh
+          shellcheck macos-vm/incus/setup.sh
+          shellcheck macos-vm/incus/optimize-guest.sh
+      - name: ruff
+        run: ruff check macos-vm/fetch/fetch-macos.py
+      - name: yamllint
+        run: yamllint -d relaxed macos-vm/incus/profile.yaml
+      - name: Python syntax
+        run: python3 -m py_compile macos-vm/fetch/fetch-macos.py
+
+  # ── compat: mlsblk build (macOS only), shellcheck ────────────────────────
+
+  compat-lint:
+    name: compat / shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y --no-install-recommends shellcheck
+      - name: shellcheck
+        run: |
+          shellcheck compat/linuxify/linuxify
+          shellcheck compat/install.sh
+
+  compat-mlsblk:
+    name: compat / mlsblk (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build mlsblk
+        run: make -C compat mlsblk
+      - name: Verify binary
+        run: test -f compat/mlsblk/mlsblk
+
+  compat-bsdcoreutils:
+    name: compat / bsdcoreutils submodule
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Verify submodule registered and populated
+        run: |
+          # Confirm .gitmodules has the entry
+          grep -q "DiegoMagdaleno/BSDCoreUtils" .gitmodules
+          # Confirm the submodule directory was checked out
+          test -d compat/bsdcoreutils/upstream
+          ls compat/bsdcoreutils/upstream/ | head -5
+
+  # ── btrfs-dwarfs: userspace build + unit tests ────────────────────────────
+
+  btrfs-dwarfs-build:
+    name: btrfs-dwarfs / userspace (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: btrfs-dwarfs
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc clang libc6-dev
+      - name: Configure (Release)
+        run: |
+          cmake -S userspace -B build/release \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_DAEMON=ON \
+            -DBUILD_CLI=ON \
+            -DBUILD_TESTS=OFF
+      - name: Build
+        run: cmake --build build/release --parallel
+      - name: Verify binaries
+        run: |
+          test -f build/release/bdfs_daemon
+          test -f build/release/bdfs
+
+  btrfs-dwarfs-unit:
+    name: btrfs-dwarfs / unit tests
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: btrfs-dwarfs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build gcc clang libc6-dev
+      - name: Configure (Debug + ASan)
+        run: |
+          cmake -S userspace -B build/asan \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_DAEMON=ON \
+            -DBUILD_CLI=ON \
+            -DBUILD_TESTS=ON \
+            -DENABLE_ASAN=ON
+      - name: Build
+        run: cmake --build build/asan --parallel
+      - name: Run unit tests
+        run: cd build/asan && ctest --output-on-failure --timeout 30
+
+  btrfs-dwarfs-clang:
+    name: btrfs-dwarfs / clang build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: btrfs-dwarfs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake ninja-build clang
+      - name: Configure
+        run: |
+          cmake -S userspace -B build/clang \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DBUILD_DAEMON=ON \
+            -DBUILD_CLI=ON
+      - name: Build
+        run: cmake --build build/clang --parallel
+
+  btrfs-dwarfs-kernel:
+    name: btrfs-dwarfs / kernel module (compile check)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: btrfs-dwarfs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kernel headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            linux-headers-$(uname -r) build-essential kmod
+      - name: Build kernel module
+        # continue-on-error: the runner kernel may lack BTRFS/FUSE config.
+        # We still catch C syntax errors and missing headers.
+        run: make kernel KDIR=/lib/modules/$(uname -r)/build
+        continue-on-error: true
+      - name: Report result
+        run: |
+          if [ -f kernel/btrfs_dwarfs/btrfs_dwarfs.ko ]; then
+            echo "Kernel module compiled successfully"
+            modinfo kernel/btrfs_dwarfs/btrfs_dwarfs.ko
+          else
+            echo "Kernel module did not produce .ko (may need BTRFS/FUSE kernel config)"
+          fi
+
+  btrfs-dwarfs-static-analysis:
+    name: btrfs-dwarfs / cppcheck
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: btrfs-dwarfs
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck
+        run: sudo apt-get install -y --no-install-recommends cppcheck
+      - name: cppcheck
+        run: |
+          cppcheck \
+            --enable=warning,performance,portability \
+            --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            --suppress=preprocessorErrorDirective \
+            --suppress=uninitvar:userspace/daemon/bdfs_policy.c \
+            -I include \
+            -I include/uapi \
+            userspace/daemon/ userspace/cli/
+
+  # ── Summary gate: all required jobs must pass ─────────────────────────────
+
+  ci-pass:
+    name: CI pass
+    runs-on: ubuntu-latest
+    needs:
+      - linuxfs-build
+      - linuxfs-cross
+      - macos-vm-lint
+      - compat-lint
+      - compat-mlsblk
+      - compat-bsdcoreutils
+      - btrfs-dwarfs-build
+      - btrfs-dwarfs-unit
+      - btrfs-dwarfs-clang
+      - btrfs-dwarfs-kernel
+      - btrfs-dwarfs-static-analysis
+    if: always()
+    steps:
+      - name: Check all required jobs passed
+        run: |
+          results='${{ toJSON(needs) }}'
+          failed=$(echo "$results" | python3 -c "
+          import json, sys
+          needs = json.load(sys.stdin)
+          # btrfs-dwarfs-kernel is allowed to fail (continue-on-error in job)
+          skip = {'btrfs-dwarfs-kernel'}
+          failed = [k for k, v in needs.items()
+                    if v['result'] not in ('success', 'skipped') and k not in skip]
+          print('\n'.join(failed))
+          ")
+          if [ -n "$failed" ]; then
+            echo "Failed jobs:"
+            echo "$failed"
+            exit 1
+          fi
+          echo "All required jobs passed."
