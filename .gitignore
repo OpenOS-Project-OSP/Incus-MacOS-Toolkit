@@ -1,0 +1,11 @@
+*.img
+*.dmg
+*.qcow2
+*.iso
+firmware/
+fetch/BaseSystem*
+fetch/*.chunklist
+fetch/*.pkg
+__pycache__/
+*.pyc
+.DS_Store

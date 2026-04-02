@@ -1,0 +1,83 @@
+<!--
+  libvirt domain definition for macOS KVM.
+  Import with: sudo virsh define boot/libvirt-domain.xml
+  Derived from kholia/OSX-KVM (macOS-libvirt-Catalina.xml)
+-->
+<domain type="kvm" xmlns:qemu="http://libvirt.org/schemas/domain/qemu/1.0">
+  <name>macos-kvm</name>
+  <memory unit="MiB">4096</memory>
+  <currentMemory unit="MiB">4096</currentMemory>
+  <vcpu placement="static">4</vcpu>
+
+  <cpu mode="custom" match="exact">
+    <model fallback="forbid">Skylake-Client</model>
+    <feature policy="disable" name="hle"/>
+    <feature policy="disable" name="rtm"/>
+    <feature policy="require" name="invtsc"/>
+    <feature policy="require" name="vmware-cpuid-freq"/>
+  </cpu>
+
+  <!-- Run: bash boot/libvirt-configure.sh to substitute paths before importing -->
+  <os>
+    <type arch="x86_64" machine="q35">hvm</type>
+    <loader readonly="yes" type="pflash">@@REPO_ROOT@@/firmware/OVMF_CODE_4M.fd</loader>
+    <nvram>@@REPO_ROOT@@/firmware/OVMF_VARS-1920x1080.fd</nvram>
+  </os>
+
+  <features>
+    <acpi/>
+    <apic/>
+  </features>
+
+  <clock offset="localtime">
+    <timer name="rtc" tickpolicy="catchup"/>
+    <timer name="pit" tickpolicy="delay"/>
+    <timer name="hpet" present="no"/>
+  </clock>
+
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+
+    <!-- OpenCore bootloader -->
+    <disk type="file" device="disk">
+      <driver name="qemu" type="qcow2" cache="writeback"/>
+      <source file="@@REPO_ROOT@@/boot/OpenCore/OpenCore.qcow2"/>
+      <target dev="sda" bus="sata"/>
+      <boot order="1"/>
+    </disk>
+
+    <!-- macOS HDD -->
+    <disk type="file" device="disk">
+      <driver name="qemu" type="qcow2" cache="writeback"/>
+      <source file="@@REPO_ROOT@@/mac_hdd.qcow2"/>
+      <target dev="sdb" bus="sata"/>
+    </disk>
+
+    <!-- USB -->
+    <controller type="usb" model="qemu-xhci"/>
+    <input type="keyboard" bus="usb"/>
+    <input type="tablet" bus="usb"/>
+
+    <!-- Network -->
+    <interface type="user">
+      <mac address="52:54:00:c9:18:27"/>
+      <model type="e1000-82545em"/>
+    </interface>
+
+    <!-- Display -->
+    <video>
+      <model type="qxl"/>
+    </video>
+    <graphics type="spice" autoport="yes"/>
+
+    <!-- Audio -->
+    <sound model="ich9"/>
+  </devices>
+
+  <qemu:commandline>
+    <qemu:arg value="-device"/>
+    <qemu:arg value="isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc"/>
+    <qemu:arg value="-smbios"/>
+    <qemu:arg value="type=2"/>
+  </qemu:commandline>
+</domain>

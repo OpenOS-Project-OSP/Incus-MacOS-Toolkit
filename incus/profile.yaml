@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Incus profile for macos-kvm.
+#
+# Import with:
+#   incus profile create macos-kvm
+#   incus profile edit macos-kvm < incus/profile.yaml
+#
+# Then launch:
+#   incus launch --empty --vm --profile macos-kvm macos-sonoma
+
+config:
+  limits.cpu: "4"
+  limits.memory: 4GiB
+  security.secureboot: "false"
+
+  # Custom OVMF firmware (Apple-compatible UEFI vars).
+  # Incus normally manages pflash drives; we override them here so macOS
+  # gets the correct UEFI variable store with 1920x1080 resolution preset.
+  raw.qemu.conf: |
+    [drive "pflash0"]
+    if = "pflash"
+    format = "raw"
+    readonly = "on"
+    file = "/var/lib/macos-kvm/firmware/OVMF_CODE_4M.fd"
+
+    [drive "pflash1"]
+    if = "pflash"
+    format = "raw"
+    file = "/var/lib/macos-kvm/firmware/OVMF_VARS-1920x1080.fd"
+
+  # Apple SMC OSK, machine type, CPU flags, and audio required for macOS.
+  # These are appended to the QEMU command line Incus generates.
+  raw.qemu: "-device isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc -smbios type=2 -machine q35 -cpu Skylake-Client,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check -device ich9-intel-hda -device hda-duplex"
+
+devices:
+  root:
+    type: disk
+    path: /
+    pool: default
+    size: 128GiB
+
+  # Use the default managed bridge so the macOS guest has internet access.
+  # The macOS installer contacts Apple activation servers during setup.
+  # Run `incus network list` to confirm the bridge name on your system
+  # (typically "incusbr0"); change the `network` value if yours differs.
+  eth0:
+    type: nic
+    network: incusbr0
+    name: eth0
+
+description: "macOS KVM VM profile for Incus"

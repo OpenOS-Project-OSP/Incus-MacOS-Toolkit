@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, scaffold]
+  pull_request:
+
+jobs:
+  lint-shell:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: shellcheck
+        run: |
+          shellcheck boot/boot.sh
+          shellcheck fetch/convert-image.sh
+          shellcheck guest-tools/optimize.sh
+          shellcheck guest-tools/useradd-bulk.sh
+          shellcheck incus/setup.sh
+          shellcheck incus/optimize-guest.sh
+
+  lint-python:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install ruff
+      - name: ruff check
+        run: ruff check fetch/fetch-macos.py
+
+  validate-incus-profile:
+    name: Validate Incus profile YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yamllint
+        run: pip install yamllint
+      - name: yamllint
+        run: yamllint -d relaxed incus/profile.yaml
+
+  python-syntax:
+    name: Python syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Syntax check
+        run: python3 -m py_compile fetch/fetch-macos.py && echo "OK"
