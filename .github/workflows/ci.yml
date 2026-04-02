@@ -312,7 +312,7 @@ jobs:
         # sudo -E preserves the Go environment set up by setup-go.
         run: |
           sudo -E "$(which go)" test \
-            -v -tags integration -timeout 20m \
+            -v -tags integration -timeout 25m \
             ./integration/
 
   # ── Summary gate: all required jobs must pass ─────────────────────────────

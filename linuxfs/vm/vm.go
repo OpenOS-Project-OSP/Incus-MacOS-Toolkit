@@ -218,7 +218,7 @@ func (v *VM) startQEMU() error {
 	if err := v.waitForSSH(300 * time.Second); err != nil {
 		return err
 	}
-	return v.waitForCloudInit(120 * time.Second)
+	return v.waitForCloudInit(300 * time.Second)
 }
 
 // waitForSSH polls the SSH port until it accepts connections or timeout expires.

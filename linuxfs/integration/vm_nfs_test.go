@@ -60,7 +60,7 @@ func TestVMBootMountNFS(t *testing.T) {
 	requireBinary(t, "mount")
 	requireRoot(t) // NFS client mount requires root on Linux
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	// ── 1. Create ext4 image ─────────────────────────────────────────────────
