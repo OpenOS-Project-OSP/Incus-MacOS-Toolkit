@@ -106,7 +106,6 @@ func TestVMBootMountNFS(t *testing.T) {
 		DevicePath:    imgPath,
 		SSHPort:       uint16(testSSHPort),
 		ExtraHostFwds: remapped,
-		Debug:         true, // serial → stdio for CI boot diagnosis
 	}, logger)
 	if err != nil {
 		t.Fatalf("vm.New: %v", err)
