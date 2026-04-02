@@ -42,6 +42,38 @@ type VMRunner interface {
 	WaitForPort(port uint16, timeout time.Duration) error
 }
 
+// HostFwds returns the QEMU hostfwd rules needed to expose the share server
+// for the given backend to the host. Each entry is in the form
+// "tcp::HOST_PORT-:GUEST_PORT" and should be passed as
+// vm.Config.ExtraHostFwds before starting the VM.
+func HostFwds(backend Backend) []string {
+	switch backend {
+	case BackendNFS:
+		// NFS: data port + rpcbind (111) + mountd (20048)
+		return []string{
+			fmt.Sprintf("tcp::%d-:%d", portNFS, portNFS),
+			"tcp::20048-:20048",
+			"tcp::111-:111",
+		}
+	case BackendSMB:
+		return []string{fmt.Sprintf("tcp::%d-:%d", portSMB, portSMB)}
+	case BackendAFP:
+		return []string{fmt.Sprintf("tcp::%d-:%d", portAFP, portAFP)}
+	case BackendFTP:
+		// FTP control + passive data range
+		return []string{
+			fmt.Sprintf("tcp::%d-:%d", portFTP, portFTP),
+			"tcp::40000-:40000",
+			"tcp::40001-:40001",
+			"tcp::40002-:40002",
+			"tcp::40003-:40003",
+			"tcp::40004-:40004",
+		}
+	default:
+		return nil
+	}
+}
+
 // MountOptions carries the parameters for an in-VM mount operation.
 type MountOptions struct {
 	// InVMDevice is the block device inside the VM (e.g. /dev/vdc).

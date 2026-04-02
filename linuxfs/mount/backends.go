@@ -2,13 +2,15 @@
 //
 // mount/backends.go — file share backend registry and host-side mount helpers.
 //
-// Each backend exposes the filesystem mounted inside the Alpine VM to the host.
-// Derived from AlexSSD7/linsk (share/) and nohajc/anylinuxfs (NFS backend).
+// Each backend exposes the filesystem mounted inside the VM as a network share
+// that the host OS can connect to. The share server runs inside the VM;
+// QEMU user-mode networking forwards the relevant ports to the host.
 
 package mount
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 )
@@ -35,7 +37,7 @@ func DefaultBackend() Backend {
 	}
 }
 
-// Config holds share server configuration.
+// Config holds host-side share connection parameters.
 type Config struct {
 	Backend      Backend
 	ListenIP     string
@@ -50,29 +52,29 @@ func (c Config) Validate() error {
 		if runtime.GOOS != "darwin" {
 			return fmt.Errorf("AFP backend is only supported on macOS")
 		}
-	case BackendNFS:
-		if runtime.GOOS != "darwin" {
-			return fmt.Errorf("NFS backend is currently only supported on macOS")
-		}
-	case BackendSMB, BackendFTP:
-		// cross-platform
+	case BackendNFS, BackendSMB, BackendFTP:
+		// supported everywhere
 	default:
-		return fmt.Errorf("unknown backend: %q", c.Backend)
+		return fmt.Errorf("unknown backend %q; supported: afp, nfs, smb, ftp", c.Backend)
 	}
 	return nil
 }
 
 // MountURL builds the URL the host uses to connect to the share.
+// For NFS the export root is /mnt/linuxfs (fsid=0), so the client path is /.
+// For SMB and AFP the share name is "linuxfs".
+// For FTP the URL includes the non-standard port.
 func (c Config) MountURL(shareName string) string {
 	ip := c.ListenIP
-	if ip == "" {
+	if ip == "" || ip == "0.0.0.0" {
 		ip = "127.0.0.1"
 	}
 	switch c.Backend {
 	case BackendAFP:
 		return fmt.Sprintf("afp://%s/%s", ip, shareName)
 	case BackendNFS:
-		return fmt.Sprintf("nfs://%s/%s", ip, shareName)
+		// fsid=0 exports /mnt/linuxfs as the NFS root; client mounts /.
+		return fmt.Sprintf("nfs://%s/", ip)
 	case BackendSMB:
 		return fmt.Sprintf("smb://%s/%s", ip, shareName)
 	case BackendFTP:
@@ -86,35 +88,108 @@ func (c Config) MountURL(shareName string) string {
 	}
 }
 
-// AutoMount mounts the share URL at mountPoint on the host.
-// On macOS it uses the `mount` command; on Linux it uses `mount.cifs` or `mount.nfs`.
+// AutoMount mounts the share at mountPoint on the host.
+// mountPoint may be empty for AFP/SMB on macOS (Finder handles placement).
 func AutoMount(shareURL, mountPoint string) error {
 	switch runtime.GOOS {
 	case "darwin":
-		// macOS: `open` triggers Finder auto-mount for AFP/SMB/NFS URLs.
-		// For scripted use, `mount_afp`, `mount_smbfs`, `mount_nfs` are available.
+		return autoMountDarwin(shareURL, mountPoint)
+	case "linux":
+		return autoMountLinux(shareURL, mountPoint)
+	case "windows":
+		return autoMountWindows(shareURL, mountPoint)
+	default:
+		return fmt.Errorf("AutoMount not implemented on %s — connect to %s manually",
+			runtime.GOOS, shareURL)
+	}
+}
+
+func autoMountDarwin(shareURL, mountPoint string) error {
+	if mountPoint == "" {
+		// No explicit mountpoint — let Finder handle it via `open`.
+		// The volume appears under /Volumes/<share-name>.
 		cmd := exec.Command("open", shareURL)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("open %s: %w\n%s", shareURL, err, out)
 		}
 		return nil
-	case "linux":
-		cmd := exec.Command("mount", shareURL, mountPoint)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("mount %s: %w\n%s", shareURL, err, out)
-		}
-		return nil
-	default:
-		return fmt.Errorf("AutoMount not implemented on %s — connect to %s manually", runtime.GOOS, shareURL)
 	}
+
+	// Explicit mountpoint: use the appropriate mount_* command.
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", mountPoint, err)
+	}
+
+	var cmd *exec.Cmd
+	switch backendFromURL(shareURL) {
+	case BackendAFP:
+		cmd = exec.Command("mount_afp", shareURL, mountPoint)
+	case BackendNFS:
+		// mount_nfs expects host:/path syntax, not a URL.
+		host, path := splitNFSURL(shareURL)
+		cmd = exec.Command("mount_nfs", "-o", "resvport,rw", host+":"+path, mountPoint)
+	case BackendSMB:
+		cmd = exec.Command("mount_smbfs", shareURL, mountPoint)
+	default:
+		// FTP or unknown — fall back to open.
+		cmd = exec.Command("open", shareURL)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("mount %s → %s: %w\n%s", shareURL, mountPoint, err, out)
+	}
+	return nil
+}
+
+func autoMountLinux(shareURL, mountPoint string) error {
+	if mountPoint == "" {
+		return fmt.Errorf("--mountpoint is required on Linux; share URL: %s", shareURL)
+	}
+	if err := os.MkdirAll(mountPoint, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", mountPoint, err)
+	}
+
+	var cmd *exec.Cmd
+	switch backendFromURL(shareURL) {
+	case BackendNFS:
+		host, path := splitNFSURL(shareURL)
+		cmd = exec.Command("mount", "-t", "nfs", host+":"+path, mountPoint)
+	case BackendSMB:
+		cmd = exec.Command("mount", "-t", "cifs", shareURL, mountPoint,
+			"-o", "guest")
+	default:
+		return fmt.Errorf("backend not supported for auto-mount on Linux; connect to %s manually",
+			shareURL)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("mount %s → %s: %w\n%s", shareURL, mountPoint, err, out)
+	}
+	return nil
+}
+
+func autoMountWindows(shareURL, mountPoint string) error {
+	if mountPoint == "" {
+		mountPoint = "Z:"
+	}
+	// net use Z: \\127.0.0.1\linuxfs
+	unc := smbURLToUNC(shareURL)
+	cmd := exec.Command("net", "use", mountPoint, unc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("net use %s %s: %w\n%s", mountPoint, unc, err, out)
+	}
+	return nil
 }
 
 // AutoUnmount unmounts a previously mounted share.
 func AutoUnmount(mountPoint string) error {
+	if mountPoint == "" {
+		return nil
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
 		cmd = exec.Command("diskutil", "unmount", mountPoint)
+	case "windows":
+		cmd = exec.Command("net", "use", mountPoint, "/delete")
 	default:
 		cmd = exec.Command("umount", mountPoint)
 	}
@@ -122,4 +197,54 @@ func AutoUnmount(mountPoint string) error {
 		return fmt.Errorf("unmount %s: %w\n%s", mountPoint, err, out)
 	}
 	return nil
+}
+
+// backendFromURL infers the Backend from a share URL scheme.
+func backendFromURL(url string) Backend {
+	switch {
+	case len(url) >= 6 && url[:6] == "afp://":
+		return BackendAFP
+	case len(url) >= 6 && url[:6] == "nfs://":
+		return BackendNFS
+	case len(url) >= 6 && url[:6] == "smb://":
+		return BackendSMB
+	case len(url) >= 6 && url[:6] == "ftp://":
+		return BackendFTP
+	default:
+		return ""
+	}
+}
+
+// splitNFSURL converts nfs://host/path → (host, /path).
+func splitNFSURL(url string) (host, path string) {
+	// Strip "nfs://"
+	rest := url[6:]
+	slash := len(rest)
+	for i, c := range rest {
+		if c == '/' {
+			slash = i
+			break
+		}
+	}
+	host = rest[:slash]
+	path = rest[slash:]
+	if path == "" {
+		path = "/"
+	}
+	return host, path
+}
+
+// smbURLToUNC converts smb://host/share → \\host\share.
+func smbURLToUNC(url string) string {
+	rest := url[6:] // strip "smb://"
+	// Replace forward slashes with backslashes and prepend \\
+	unc := "\\\\"
+	for _, c := range rest {
+		if c == '/' {
+			unc += "\\"
+		} else {
+			unc += string(c)
+		}
+	}
+	return unc
 }

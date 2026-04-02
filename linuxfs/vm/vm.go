@@ -37,6 +37,11 @@ type Config struct {
 	// 0 = use 10022.
 	SSHPort uint16
 
+	// ExtraHostFwds is a list of additional QEMU hostfwd rules in the form
+	// "tcp::HOST_PORT-:GUEST_PORT", appended to the -netdev user option.
+	// Used to forward share server ports (NFS, SMB, AFP, FTP) to the host.
+	ExtraHostFwds []string
+
 	// DataDir overrides the default cache directory for VM images.
 	DataDir string
 }
@@ -149,7 +154,7 @@ func (v *VM) startQEMU() error {
 		// Target block device / image to mount
 		"-drive", fmt.Sprintf("if=virtio,format=raw,file=%s,readonly=%s",
 			v.cfg.DevicePath, boolToOnOff(v.cfg.ReadOnly)),
-		"-netdev", fmt.Sprintf("user,id=net0,hostfwd=tcp::%d-:22", sshPort),
+		"-netdev", v.buildNetdev(sshPort),
 		"-device", "virtio-net-pci,netdev=net0",
 	}
 
@@ -195,6 +200,16 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("timed out waiting for VM SSH on %s after %s", addr, timeout)
+}
+
+// buildNetdev constructs the QEMU -netdev user argument string, including
+// the SSH port forward and any extra host forwards from Config.ExtraHostFwds.
+func (v *VM) buildNetdev(sshPort uint16) string {
+	s := fmt.Sprintf("user,id=net0,hostfwd=tcp::%d-:22", sshPort)
+	for _, fwd := range v.cfg.ExtraHostFwds {
+		s += ",hostfwd=" + fwd
+	}
+	return s
 }
 
 func boolToOnOff(b bool) string {

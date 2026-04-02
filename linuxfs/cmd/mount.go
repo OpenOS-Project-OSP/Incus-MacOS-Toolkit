@@ -104,12 +104,13 @@ Flags:
 	}
 
 	vmCfg := vm.Config{
-		Provider:   provider,
-		MemMiB:     uint32(flagVMMemMiB), //nolint:gosec
-		DevicePath: device,
-		ReadOnly:   *readOnly,
-		Debug:      flagDebug,
-		DataDir:    flagDataDir,
+		Provider:      provider,
+		MemMiB:        uint32(flagVMMemMiB), //nolint:gosec
+		DevicePath:    device,
+		ReadOnly:      *readOnly,
+		Debug:         flagDebug,
+		DataDir:       flagDataDir,
+		ExtraHostFwds: mount.HostFwds(backend),
 	}
 
 	v, err := vm.New(context.Background(), vmCfg, logger)
