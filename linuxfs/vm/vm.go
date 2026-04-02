@@ -231,13 +231,46 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err == nil {
 			conn.Close()
-			v.logger.Info("VM SSH ready", "addr", addr)
-			return nil
+			// TCP port is open; wait for the SSH daemon to complete its
+			// banner exchange before returning.
+			if sshErr := v.waitForSSHBanner(addr, deadline); sshErr == nil {
+				v.logger.Info("VM SSH ready", "addr", addr)
+				return nil
+			}
+			// Banner not ready yet — keep polling.
 		}
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("timed out waiting for VM SSH on %s after %s\nQEMU stderr: %s",
 		addr, timeout, v.qemuStderr.String())
+}
+
+// waitForSSHBanner connects to addr and reads the SSH protocol banner line.
+// Returns nil only when the server sends a valid "SSH-" banner before deadline.
+func (v *VM) waitForSSHBanner(addr string, deadline time.Time) error {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return fmt.Errorf("deadline exceeded")
+	}
+	timeout := remaining
+	if timeout > 5*time.Second {
+		timeout = 5 * time.Second
+	}
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return err
+	}
+	if n < 4 || string(buf[:4]) != "SSH-" {
+		return fmt.Errorf("unexpected banner: %q", buf[:n])
+	}
+	return nil
 }
 
 // buildNetdev constructs the QEMU -netdev user argument string, including
