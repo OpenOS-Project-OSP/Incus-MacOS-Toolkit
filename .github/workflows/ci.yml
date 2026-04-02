@@ -294,7 +294,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 qemu-utils \
             nfs-common nfs-kernel-server \
-            e2fsprogs
+            e2fsprogs \
+            cloud-image-utils
       - name: Enable KVM access for runner user
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
