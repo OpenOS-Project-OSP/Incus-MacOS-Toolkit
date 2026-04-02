@@ -309,6 +309,21 @@ jobs:
           qemu-system-x86_64 --version
           echo "KVM available: $(test -e /dev/kvm && echo yes || echo no)"
           ls -la /dev/kvm 2>/dev/null || true
+          # Download the Alpine image and try launching QEMU directly
+          IMG_DIR="$HOME/.cache/linuxfs/alpine"
+          mkdir -p "$IMG_DIR"
+          IMG="$IMG_DIR/nocloud_alpine-3.21.6-x86_64-bios-cloudinit-r0.qcow2"
+          if [ ! -f "$IMG" ]; then
+            curl -fsSL -o "$IMG" \
+              "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/cloud/nocloud_alpine-3.21.6-x86_64-bios-cloudinit-r0.qcow2"
+          fi
+          echo "Image size: $(du -sh "$IMG")"
+          # Try a minimal QEMU launch (exits immediately, just checks args)
+          timeout 5 qemu-system-x86_64 \
+            -accel kvm -m 512 -nographic -serial null -monitor none \
+            -drive "if=virtio,format=qcow2,file=$IMG" \
+            -netdev "user,id=net0" -device "virtio-net-pci,netdev=net0" \
+            2>&1 | head -20 || true
       - name: Run integration test (as root for NFS mount)
         working-directory: linuxfs
         # sudo -E preserves the Go environment set up by setup-go.
