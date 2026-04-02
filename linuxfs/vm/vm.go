@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -261,20 +262,26 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 // waitForCloudInit waits for cloud-init to fully complete all modules,
 // including package installation, so that the VM is fully configured
 // before we run setup scripts inside it.
+//
+// Strategy: poll "cloud-init status" until it reports "done" or "error".
+// This is more reliable than --wait which may return before the config
+// module (package installation) finishes on some cloud-init versions.
 func (v *VM) waitForCloudInit(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
-	// cloud-init status --wait blocks until all stages finish.
-	// Fall back to polling sudo if cloud-init is not available.
-	if _, err := v.Run(fmt.Sprintf(
-		"sudo cloud-init status --wait --timeout %d 2>/dev/null || "+
-			"(for i in $(seq 1 %d); do sudo true 2>/dev/null && exit 0; sleep 3; done; exit 1)",
-		int(timeout.Seconds()),
-		int(timeout.Seconds()/3),
-	)); err != nil {
-		return fmt.Errorf("timed out waiting for cloud-init after %s", timeout)
+	for time.Now().Before(deadline) {
+		out, err := v.Run("sudo cloud-init status 2>/dev/null || echo 'running'")
+		if err == nil {
+			status := strings.TrimSpace(out)
+			v.logger.Debug("cloud-init status", "status", status)
+			if strings.Contains(status, "done") || strings.Contains(status, "error") {
+				v.logger.Info("cloud-init ready", "status", status)
+				return nil
+			}
+		}
+		time.Sleep(5 * time.Second)
 	}
-	v.logger.Info("cloud-init ready")
-	return nil
+	return fmt.Errorf("timed out waiting for cloud-init after %s", timeout)
 }
 
 // waitForSSHBanner connects to addr and reads the SSH protocol banner line.
