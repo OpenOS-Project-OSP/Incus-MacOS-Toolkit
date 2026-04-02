@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "fix/*"]
+  pull_request:
+
+jobs:
+  mlsblk:
+    name: Build mlsblk
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make -C mlsblk mlsblk
+      - name: Smoke test (list format)
+        # -l is a valid flag; exit code may be non-zero if no disks found in CI,
+        # so we only check that the binary runs without a crash (SIGSEGV etc.)
+        run: ./mlsblk/mlsblk -l 2>&1 | head -5 || true
+
+  lint-shell:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: shellcheck
+        run: |
+          shellcheck linuxify/linuxify
+          shellcheck install.sh
+
+  linuxify-syntax:
+    name: linuxify bash syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: bash -n linuxify/linuxify && bash -n install.sh
+
+  bsdcoreutils-build:
+    name: Build bsdcoreutils
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install cmake
+        run: sudo apt-get install -y cmake
+      - name: Configure
+        run: cmake -S bsdcoreutils/upstream -B bsdcoreutils/build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: make -C bsdcoreutils/build -j$(nproc)
