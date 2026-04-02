@@ -259,17 +259,21 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 		addr, timeout, v.qemuStderr.String())
 }
 
-// waitForCloudInit waits for cloud-init to fully complete, including any
-// runcmd steps. It polls for /var/lib/cloud/instance/boot-finished (written
-// by cloud-init itself) and /var/lib/cloud/instance/boot-finished-custom
-// (written by the last runcmd entry) to confirm all user commands ran.
+// waitForCloudInit waits for cloud-init to fully complete, including runcmd.
+// It polls for /var/lib/cloud/instance/user-data.txt.i (written by cloud-init
+// after runcmd finishes) or falls back to a custom sentinel file written by
+// the last runcmd entry.
 func (v *VM) waitForCloudInit(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
 	for time.Now().Before(deadline) {
-		// cloud-init writes boot-finished after the final module completes.
+		// Poll for the custom sentinel written by the last runcmd entry.
+		// Falls back to checking cloud-init's own result file.
 		out, err := v.Run(
-			"test -f /var/lib/cloud/instance/boot-finished && echo done || echo waiting",
+			"test -f /var/lib/cloud/instance/boot-finished-custom && echo done" +
+				" || (cloud-init status 2>/dev/null | grep -q 'done' && " +
+				"test -f /var/lib/cloud/instance/boot-finished && echo done)" +
+				" || echo waiting",
 		)
 		if err == nil && strings.Contains(out, "done") {
 			v.logger.Info("cloud-init ready")
