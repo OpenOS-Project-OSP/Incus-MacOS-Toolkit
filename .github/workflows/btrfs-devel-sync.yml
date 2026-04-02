@@ -60,10 +60,9 @@ jobs:
 
           BTRFS_TREE="${{ steps.check.outputs.upstream_tree }}"
           git read-tree --prefix=btrfs-devel/ -u "$BTRFS_TREE"
-          git commit -m "btrfs-devel: sync with kdave/btrfs-devel ${DATE}
-
-Automated weekly sync of fs/btrfs/ from kdave/btrfs-devel master.
-Tree SHA: ${BTRFS_TREE}"
+          git commit -m "btrfs-devel: sync with kdave/btrfs-devel ${DATE}" \
+            -m "Automated weekly sync of fs/btrfs/ from kdave/btrfs-devel master." \
+            -m "Tree SHA: ${BTRFS_TREE}"
 
           git push origin "$BRANCH"
           echo "name=${BRANCH}" >> "$GITHUB_OUTPUT"
@@ -76,10 +75,7 @@ Tree SHA: ${BTRFS_TREE}"
           DATE=$(date +%Y-%m-%d)
           gh pr create \
             --title "chore: btrfs-devel sync ${DATE}" \
-            --body "Automated weekly sync of \`fs/btrfs/\` from [kdave/btrfs-devel](https://github.com/kdave/btrfs-devel) master.
-
-This PR was opened automatically by the \`btrfs-devel-sync\` workflow.
-Review for any API changes that may affect \`btrfs-dwarfs/\` before merging." \
+            --body "Automated weekly sync of fs/btrfs/ from kdave/btrfs-devel master. Opened automatically by the btrfs-devel-sync workflow. Review for API changes that may affect btrfs-dwarfs/ before merging." \
             --base main \
             --head "${{ steps.branch.outputs.name }}" \
             --label "automated,btrfs-devel"
