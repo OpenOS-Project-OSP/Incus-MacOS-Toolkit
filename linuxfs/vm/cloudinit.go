@@ -19,7 +19,7 @@ import (
 
 // cloudInitSeedVersion is incremented whenever the user-data template changes
 // in a way that requires existing cached seed ISOs to be regenerated.
-const cloudInitSeedVersion = 8
+const cloudInitSeedVersion = 9
 
 // EnsureCloudInitSeed creates a cloud-init seed ISO in dir if it doesn't
 // already exist. The ISO is named after the provider to avoid collisions

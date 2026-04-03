@@ -14,9 +14,11 @@ func (FedoraProvider) Name() string { return "fedora" }
 
 func (FedoraProvider) ImageURL(arch Arch) string {
 	// Fedora cloud images: https://fedoraproject.org/cloud/download
+	// The filename encodes the arch twice: once in the directory path and
+	// once in the filename itself (e.g. Fedora-Cloud-Base-41-1.4.aarch64.qcow2).
 	return fmt.Sprintf(
-		"https://download.fedoraproject.org/pub/fedora/linux/releases/%s/Cloud/%s/images/Fedora-Cloud-Base-%s-%s.x86_64.qcow2",
-		fedoraVersion, arch.FedoraString(), fedoraVersion, "1.4",
+		"https://download.fedoraproject.org/pub/fedora/linux/releases/%s/Cloud/%s/images/Fedora-Cloud-Base-%s-1.4.%s.qcow2",
+		fedoraVersion, arch.FedoraString(), fedoraVersion, arch.FedoraString(),
 	)
 }
 
@@ -41,6 +43,8 @@ func (FedoraProvider) CloudInitRuncmds() []string {
 	return []string{
 		"systemctl enable sshd",
 		"systemctl start sshd",
+		// Sentinel written last so waitForCloudInit knows runcmd completed.
+		"touch /run/cloud-init-custom-done",
 	}
 }
 

@@ -32,6 +32,7 @@ func (DebianProvider) CloudInitPackages() []string {
 		"ntfs-3g",
 		"lvm2",
 		"cryptsetup",
+		"zfsutils-linux",
 		"fuse3",
 		"rsync",
 	}
@@ -41,6 +42,8 @@ func (DebianProvider) CloudInitRuncmds() []string {
 	return []string{
 		"systemctl enable ssh",
 		"systemctl start ssh",
+		// Sentinel written last so waitForCloudInit knows runcmd completed.
+		"touch /run/cloud-init-custom-done",
 	}
 }
 

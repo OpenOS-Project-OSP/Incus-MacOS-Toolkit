@@ -144,8 +144,8 @@ log "Installed: ${INSTALL_PREFIX}/bin/bdfs  ${INSTALL_PREFIX}/sbin/bdfs_daemon"
 log "Installing bdfs_daemon service ..."
 
 if command -v systemctl >/dev/null 2>&1; then
-    # Render the .in template with the actual install prefix.
-    sed "s|@PREFIX@|${INSTALL_PREFIX}|g" \
+    # Render the .in template: replace @BDFS_DAEMON_BIN@ with the installed path.
+    sed "s|@BDFS_DAEMON_BIN@|${INSTALL_PREFIX}/sbin/bdfs_daemon|g" \
         "$SRC_DIR/configs/bdfs_daemon.service.in" \
         > /etc/systemd/system/bdfs_daemon.service
     systemctl daemon-reload

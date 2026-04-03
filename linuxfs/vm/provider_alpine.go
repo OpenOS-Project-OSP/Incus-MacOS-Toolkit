@@ -38,6 +38,7 @@ func (AlpineProvider) CloudInitPackages() []string {
 		"ntfs-3g",
 		"lvm2",
 		"cryptsetup",
+		"zfs",
 		// FUSE3 — required by DwarFS (btrfs-dwarfs framework)
 		"fuse3",
 		// General utilities
@@ -50,6 +51,8 @@ func (AlpineProvider) CloudInitRuncmds() []string {
 	return []string{
 		"rc-update add sshd default",
 		"rc-service sshd start",
+		// Sentinel written last so waitForCloudInit knows runcmd completed.
+		"touch /run/cloud-init-custom-done",
 	}
 }
 

@@ -35,11 +35,13 @@ GOARCH  ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
 UNAME_S := $(shell uname -s 2>/dev/null || echo Linux)
 
 .PHONY: all clean install test fmt \
-        linuxfs linuxfs-clean linuxfs-install linuxfs-test \
+        linuxfs linuxfs-clean linuxfs-install linuxfs-test linuxfs-fmt linuxfs-cross \
         compat compat-clean compat-install \
         btrfs-dwarfs btrfs-dwarfs-clean btrfs-dwarfs-install btrfs-dwarfs-test \
+        btrfs-dwarfs-check btrfs-dwarfs-fmt btrfs-dwarfs-devel \
         btrfs-devel-sync bdfs-vm-install bdfs-vm-provision \
-        macos-vm-firmware macos-vm-opencore macos-vm-disk
+        macos-vm-firmware macos-vm-opencore macos-vm-disk macos-vm-fetch \
+        macos-vm-boot macos-vm-headless
 
 # ── Top-level ────────────────────────────────────────────────────────────────
 
@@ -127,16 +129,16 @@ btrfs-dwarfs-fmt:
 # Pass VM_SSH_PORT, VM_USER, VM_SSH_KEY to match your running VM.
 bdfs-vm-install:
 	$(MAKE) -C btrfs-dwarfs bdfs-vm-install \
-	    VM_SSH_PORT=$(VM_SSH_PORT) \
-	    VM_USER=$(VM_USER) \
+	    $(if $(VM_SSH_PORT),VM_SSH_PORT=$(VM_SSH_PORT),) \
+	    $(if $(VM_USER),VM_USER=$(VM_USER),) \
 	    $(if $(VM_SSH_KEY),VM_SSH_KEY=$(VM_SSH_KEY),)
 
 # Start a throwaway VM, install bdfs, shut it down — no manual VM management needed.
 bdfs-vm-provision:
 	$(MAKE) -C btrfs-dwarfs bdfs-vm-provision \
-	    VM_SSH_PORT=$(VM_SSH_PORT) \
-	    VM_USER=$(VM_USER) \
-	    VM_DISTRO=$(if $(VM_DISTRO),$(VM_DISTRO),alpine) \
+	    $(if $(VM_SSH_PORT),VM_SSH_PORT=$(VM_SSH_PORT),) \
+	    $(if $(VM_USER),VM_USER=$(VM_USER),) \
+	    $(if $(VM_DISTRO),VM_DISTRO=$(VM_DISTRO),) \
 	    $(if $(VM_SSH_KEY),VM_SSH_KEY=$(VM_SSH_KEY),) \
 	    $(if $(VM_DATA_DIR),VM_DATA_DIR=$(VM_DATA_DIR),)
 

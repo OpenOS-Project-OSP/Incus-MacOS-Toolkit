@@ -36,7 +36,7 @@ VM_SSH_OPTS  = -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
                $(if $(VM_SSH_KEY),-i $(VM_SSH_KEY),)
 
 .PHONY: all kernel kernel-devel userspace install install-kernel install-userspace \
-        clean clean-kernel clean-userspace test check fmt \
+        install-post clean clean-kernel clean-userspace test check fmt \
         bdfs-vm-install bdfs-vm-provision
 
 all: kernel userspace
@@ -152,23 +152,44 @@ bdfs-vm-install:
 VM_DISTRO   ?= alpine
 VM_DATA_DIR ?=
 
+# Default SSH user matches the distro's cloud-init default user.
+# Override with VM_USER=<user> if needed.
+_VM_USER_alpine  = alpine
+_VM_USER_debian  = debian
+_VM_USER_ubuntu  = ubuntu
+_VM_USER_fedora  = fedora
+# Use explicit VM_USER if set, otherwise derive from VM_DISTRO.
+_EFFECTIVE_VM_USER = $(if $(filter-out alpine,$(VM_USER)),$(VM_USER),$(or $(_VM_USER_$(VM_DISTRO)),alpine))
+
 bdfs-vm-provision:
 	@echo "Starting $(VM_DISTRO) VM for bdfs provisioning ..."
-	@# Start VM in background via linuxfs shell with /dev/null device.
-	@# linuxfs writes the SSH port to stdout; we capture it.
+	@# Run linuxfs in the foreground with a subshell so we can wait for SSH
+	@# readiness before proceeding. linuxfs shell blocks until the VM exits,
+	@# so we start it in the background and poll SSH ourselves.
 	linuxfs --distro $(VM_DISTRO) \
 	    $(if $(VM_DATA_DIR),--data-dir $(VM_DATA_DIR),) \
+	    --ssh-port $(VM_SSH_PORT) \
 	    shell /dev/null &
-	@echo "Waiting for VM to be ready on port $(VM_SSH_PORT) ..."
-	@for i in $$(seq 1 30); do \
-	    nc -z 127.0.0.1 $(VM_SSH_PORT) 2>/dev/null && break; \
+	@echo "Waiting for VM SSH on port $(VM_SSH_PORT) ..."
+	@for i in $$(seq 1 60); do \
+	    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+	        -o ConnectTimeout=2 -o BatchMode=yes \
+	        $(if $(VM_SSH_KEY),-i $(VM_SSH_KEY),) \
+	        -p $(VM_SSH_PORT) $(_EFFECTIVE_VM_USER)@127.0.0.1 true 2>/dev/null \
+	        && break; \
 	    sleep 2; \
 	done
 	@echo "VM ready. Running bdfs-vm-install ..."
-	$(MAKE) bdfs-vm-install VM_SSH_PORT=$(VM_SSH_PORT) VM_USER=$(VM_USER) \
+	$(MAKE) bdfs-vm-install VM_SSH_PORT=$(VM_SSH_PORT) \
+	    VM_USER=$(_EFFECTIVE_VM_USER) \
 	    $(if $(VM_SSH_KEY),VM_SSH_KEY=$(VM_SSH_KEY),)
 	@echo "Stopping VM ..."
-	@ssh $(VM_SSH_OPTS) $(VM_USER)@127.0.0.1 "sudo poweroff" 2>/dev/null || true
+	@ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+	    -o ConnectTimeout=5 -o BatchMode=yes \
+	    $(if $(VM_SSH_KEY),-i $(VM_SSH_KEY),) \
+	    -p $(VM_SSH_PORT) $(_EFFECTIVE_VM_USER)@127.0.0.1 \
+	    "sudo poweroff" 2>/dev/null || true
+	@wait 2>/dev/null || true
 	@echo "bdfs-vm-provision complete."
 
 # ── Formatting ───────────────────────────────────────────────────────────────

@@ -281,21 +281,26 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 }
 
 // waitForCloudInit waits for cloud-init to fully complete, including runcmd.
-// It polls for /var/lib/cloud/instance/user-data.txt.i (written by cloud-init
-// after runcmd finishes) or falls back to a custom sentinel file written by
-// the last runcmd entry.
+//
+// Strategy (in order):
+//  1. If the provider writes a sentinel file (/run/cloud-init-custom-done),
+//     wait for it — it is written as the last runcmd entry and lives on
+//     /run (tmpfs) so it cannot be a stale leftover from a previous boot.
+//  2. Otherwise poll `cloud-init status` until it reports "done" or "error".
+//     This works on every distro that ships cloud-init without requiring any
+//     provider-specific runcmd entry.
 func (v *VM) waitForCloudInit(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
 	for time.Now().Before(deadline) {
-		// Poll for the sentinel file written by the last runcmd entry.
-		// The sentinel lives on /run (tmpfs), so it cannot be a leftover
-		// from a previous boot. The qcow2 overlay guarantees a clean disk
-		// state on every VM start, so no additional package check is needed.
 		out, err := v.Run(
-			"test -f /run/cloud-init-custom-done && echo RUNCMD_COMPLETE || echo RUNCMD_PENDING",
+			// Check sentinel first (fast path for providers that write it).
+			// Fall back to `cloud-init status` which exits 0 when done/error.
+			"if test -f /run/cloud-init-custom-done; then echo DONE; " +
+				"elif cloud-init status 2>/dev/null | grep -qE 'done|error'; then echo DONE; " +
+				"else echo PENDING; fi",
 		)
-		if err == nil && strings.Contains(out, "RUNCMD_COMPLETE") {
+		if err == nil && strings.Contains(out, "DONE") {
 			v.logger.Info("cloud-init ready")
 			return nil
 		}

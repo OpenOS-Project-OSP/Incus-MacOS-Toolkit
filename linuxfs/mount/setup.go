@@ -49,18 +49,22 @@ type VMRunner interface {
 func HostFwds(backend Backend) []string {
 	switch backend {
 	case BackendNFS:
-		// NFS: data port + rpcbind (111) + mountd (20048, pinned in setup script)
+		// NFS data port + mountd (pinned to 20048 via systemd drop-in).
+		// Port 111 (rpcbind) is intentionally omitted: it is a privileged
+		// port already bound by the host's rpcbind daemon, so QEMU cannot
+		// bind a hostfwd for it. The NFS v3 mount uses explicit port= and
+		// mountport= options so rpcbind is never consulted.
 		return []string{
 			fmt.Sprintf("tcp::%d-:%d", portNFS, portNFS),
 			"tcp::20048-:20048",
-			"tcp::111-:111",
 		}
 	case BackendSMB:
 		return []string{fmt.Sprintf("tcp::%d-:%d", portSMB, portSMB)}
 	case BackendAFP:
 		return []string{fmt.Sprintf("tcp::%d-:%d", portAFP, portAFP)}
 	case BackendFTP:
-		// FTP control + passive data range
+		// FTP control port + passive data range (40000–40004, 5 ports).
+		// Must match pasv_min_port/pasv_max_port in the vsftpd config below.
 		return []string{
 			fmt.Sprintf("tcp::%d-:%d", portFTP, portFTP),
 			"tcp::40000-:40000",
@@ -186,6 +190,12 @@ vgchange -ay %s
 
 	// ── Step 3: Mount ───────────────────────────────────────────────────────
 	fmt.Fprintf(&b, "mkdir -p %s\n", vmMountPoint)
+
+	// ZFS pools must be imported before mounting. Import by device path so
+	// the pool name doesn't need to be known in advance.
+	if opts.FSType == "zfs" {
+		fmt.Fprintf(&b, "zpool import -d \"$MOUNT_DEV\" -a -f 2>/dev/null || true\n")
+	}
 
 	mountCmd := fmt.Sprintf("mount")
 	if opts.FSType != "" {
@@ -427,7 +437,7 @@ listen=YES
 listen_port=%d
 pasv_enable=YES
 pasv_min_port=40000
-pasv_max_port=40100
+pasv_max_port=40004
 FTPEOF
 
 if command -v rc-service >/dev/null 2>&1; then
