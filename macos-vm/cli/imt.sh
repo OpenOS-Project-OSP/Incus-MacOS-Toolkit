@@ -952,7 +952,9 @@ cmd_vm_fleet() {
     shift || true
 
     case "${subcmd}" in
-        list|ls)    _fleet_list ;;
+        list|ls|all) _fleet_list "${subcmd}" ;;
+        running)    _fleet_list running ;;
+        stopped)    _fleet_list stopped ;;
         start-all)  _fleet_start_all ;;
         stop-all)   _fleet_stop_all "$@" ;;
         backup-all) _fleet_backup_all ;;
