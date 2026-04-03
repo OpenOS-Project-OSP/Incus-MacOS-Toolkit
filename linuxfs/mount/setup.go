@@ -304,7 +304,7 @@ exportfs -ra
 sleep 1
 # Verify both NFS data port and mountd are listening.
 ss -tlnp 2>/dev/null | grep -E ':2049|:20048' || true
-`, vmMountPoint, vmMountPoint, listenIP, roFlag)
+`, vmMountPoint, vmMountPoint, roFlag)
 	return b.String()
 }
 
