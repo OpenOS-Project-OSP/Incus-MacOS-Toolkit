@@ -291,10 +291,11 @@ func (v *VM) waitForCloudInit(timeout time.Duration) error {
 		// package installation.
 		// /run is a tmpfs cleared on every boot, so this sentinel can only
 		// exist if the current boot's runcmd has completed.
+		// Use a unique marker string unlikely to appear in SSH banners.
 		out, err := v.Run(
-			"test -f /run/cloud-init-custom-done && echo done || echo waiting",
+			"test -f /run/cloud-init-custom-done && echo RUNCMD_COMPLETE || echo RUNCMD_PENDING",
 		)
-		if err == nil && strings.Contains(out, "done") {
+		if err == nil && strings.Contains(out, "RUNCMD_COMPLETE") {
 			v.logger.Info("cloud-init ready")
 			return nil
 		}
