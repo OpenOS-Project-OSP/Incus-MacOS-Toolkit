@@ -50,14 +50,15 @@ type Config struct {
 
 // VM represents a running Linux microVM instance.
 type VM struct {
-	cfg        Config
-	provider   Provider
-	arch       Arch
-	logger     *slog.Logger
-	cmd        *exec.Cmd
-	ctx        context.Context
-	cancel     context.CancelFunc
-	qemuStderr bytes.Buffer // captures QEMU stderr when Debug is false
+	cfg         Config
+	provider    Provider
+	arch        Arch
+	logger      *slog.Logger
+	cmd         *exec.Cmd
+	ctx         context.Context
+	cancel      context.CancelFunc
+	qemuStderr  bytes.Buffer // captures QEMU stderr when Debug is false
+	overlayPath string       // ephemeral qcow2 overlay; deleted on Stop
 
 	// SSHPort is the resolved host port (set after Start).
 	SSHPort uint16
@@ -91,10 +92,14 @@ func (v *VM) Start() error {
 // Stop shuts down the VM.
 func (v *VM) Stop() error {
 	v.cancel()
+	var err error
 	if v.cmd != nil && v.cmd.Process != nil {
-		return v.cmd.Process.Kill()
+		err = v.cmd.Process.Kill()
 	}
-	return nil
+	if v.overlayPath != "" {
+		_ = os.Remove(v.overlayPath)
+	}
+	return err
 }
 
 // User returns the SSH username for the running VM's distro.
@@ -123,10 +128,24 @@ func (v *VM) startQEMU() error {
 		return fmt.Errorf("%s not found: install QEMU first", binary)
 	}
 
-	vmImage, err := ensureImage(v.provider, v.arch, v.cfg.DataDir)
+	baseImage, err := ensureImage(v.provider, v.arch, v.cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("vm image: %w", err)
 	}
+
+	// Create a throwaway overlay so the base image is never modified.
+	// Each VM start gets a fresh disk state; the overlay is deleted on Stop.
+	vmImage := baseImage + ".overlay.qcow2"
+	_ = os.Remove(vmImage) // remove any leftover from a previous run
+	if out, err := exec.Command("qemu-img", "create",
+		"-f", "qcow2",
+		"-b", baseImage,
+		"-F", format,
+		vmImage,
+	).CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img create overlay: %w\n%s", err, out)
+	}
+	v.overlayPath = vmImage
 
 	cacheD := v.cfg.DataDir
 	if cacheD == "" {
