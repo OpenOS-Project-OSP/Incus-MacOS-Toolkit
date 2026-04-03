@@ -46,6 +46,7 @@ Commands:
   demo        Manage a local incus-demo-server instance
   winesapos   Fetch, import, and launch winesapOS gaming VMs
   tui             Launch interactive terminal UI (requires dialog or whiptail)
+  dashboard       Launch web monitoring dashboard (requires socat/ncat/python3)
   profiles        Manage Incus profiles (list, install, diff, apply)
   setup-rootless  Configure the system for rootless VM operation via incus-user
   update          Check for and install imt updates
@@ -2455,6 +2456,20 @@ EOF
     esac
 }
 
+# ── dashboard ────────────────────────────────────────────────────────────────
+
+cmd_dashboard() {
+    local _script_dir
+    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local dash_script="${_script_dir}/../tui/imt-dashboard.sh"
+
+    if [[ -x "${dash_script}" ]]; then
+        exec "${dash_script}" "$@"
+    else
+        die "Dashboard script not found at ${dash_script}"
+    fi
+}
+
 # ── tui ──────────────────────────────────────────────────────────────────────
 
 cmd_tui() {
@@ -3223,6 +3238,7 @@ main() {
         demo)           cmd_demo       "$@" ;;
         winesapos)      cmd_winesapos  "$@" ;;
         tui)            cmd_tui        "$@" ;;
+        dashboard)      cmd_dashboard  "$@" ;;
         profiles)       cmd_profiles   "$@" ;;
         setup-rootless) cmd_setup_rootless "$@" ;;
         update)         cmd_update     "$@" ;;
