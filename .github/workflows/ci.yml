@@ -78,18 +78,20 @@ jobs:
           pip install ruff yamllint
       - name: shellcheck
         run: |
-          shellcheck macos-vm/boot/boot.sh
-          shellcheck macos-vm/fetch/convert-image.sh
+          shellcheck macos-vm/cli/imt.sh
+          shellcheck macos-vm/cli/lib.sh
+          shellcheck macos-vm/image-pipeline/build-image.sh
+          shellcheck macos-vm/image-pipeline/convert-image.sh
           shellcheck macos-vm/guest-tools/optimize.sh
           shellcheck macos-vm/guest-tools/useradd-bulk.sh
           shellcheck macos-vm/incus/setup.sh
           shellcheck macos-vm/incus/optimize-guest.sh
       - name: ruff
-        run: ruff check macos-vm/fetch/fetch-macos.py
+        run: ruff check macos-vm/image-pipeline/fetch-macos.py
       - name: yamllint
         run: yamllint -d relaxed macos-vm/incus/profile.yaml
       - name: Python syntax
-        run: python3 -m py_compile macos-vm/fetch/fetch-macos.py
+        run: python3 -m py_compile macos-vm/image-pipeline/fetch-macos.py
 
   # ── compat: mlsblk build (macOS only), shellcheck ────────────────────────
 

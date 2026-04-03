@@ -1,22 +1,28 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Incus profile for macos-kvm.
+# Incus profile for imt-managed macOS VMs.
+#
+# This profile carries only the macOS-specific QEMU overrides and network
+# configuration.  Disk devices (macos-disk, opencore, installer) are attached
+# per-instance by 'imt vm create' so that multiple VMs can coexist without
+# sharing storage volumes.
 #
 # Import with:
 #   incus profile create macos-kvm
 #   incus profile edit macos-kvm < incus/profile.yaml
 #
-# Then launch:
-#   incus launch --empty --vm --profile macos-kvm macos-sonoma
+# Or let 'imt vm create' handle it automatically.
 
 config:
+  # Resource limits are set per-instance by 'imt vm create'.
+  # Defaults here act as a fallback if the profile is applied manually.
   limits.cpu: "4"
   limits.memory: 4GiB
   security.secureboot: "false"
 
-  # Custom OVMF firmware (Apple-compatible UEFI vars).
-  # Incus normally manages pflash drives; we override them here so macOS
-  # gets the correct UEFI variable store with 1920x1080 resolution preset.
+  # Override Incus's default pflash drives with the Apple-compatible OVMF
+  # firmware.  The paths below are written by 'imt image build' (via
+  # image-pipeline/build-image.sh) and 'imt vm create'.
   raw.qemu.conf: |
     [drive "pflash0"]
     if = "pflash"
@@ -30,23 +36,22 @@ config:
     file = "/var/lib/macos-kvm/firmware/OVMF_VARS-1920x1080.fd"
 
   # Apple SMC OSK, machine type, CPU flags, and audio required for macOS.
-  # These are appended to the QEMU command line Incus generates.
-  raw.qemu: "-device isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc -smbios type=2 -machine q35 -cpu Skylake-Client,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check -device ich9-intel-hda -device hda-duplex"
+  # Appended to the QEMU command line that Incus generates.
+  raw.qemu: >-
+    -device isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc
+    -smbios type=2
+    -machine q35
+    -cpu Skylake-Client,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check
+    -device ich9-intel-hda
+    -device hda-duplex
 
 devices:
-  root:
-    type: disk
-    path: /
-    pool: default
-    size: 128GiB
-
-  # Use the default managed bridge so the macOS guest has internet access.
-  # The macOS installer contacts Apple activation servers during setup.
-  # Run `incus network list` to confirm the bridge name on your system
-  # (typically "incusbr0"); change the `network` value if yours differs.
+  # Managed bridge for internet access during macOS installation and activation.
+  # Run 'incus network list' to confirm the bridge name on your system
+  # (typically incusbr0); change the 'network' value if yours differs.
   eth0:
     type: nic
     network: incusbr0
     name: eth0
 
-description: "macOS KVM VM profile for Incus"
+description: "imt macOS KVM profile — QEMU overrides and network only; disks attached per-instance"
