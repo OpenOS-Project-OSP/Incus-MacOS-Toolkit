@@ -175,13 +175,14 @@ func TestVMBootMountNFS(t *testing.T) {
 		_ = exec.Command("umount", "-l", nfsMnt).Run()
 	})
 
-	// NFS v3 over TCP; fsid=0 means the export root is /mnt/linuxfs inside VM.
+	// NFS v3 over TCP. Mount the exported path directly — mountd checks the
+	// actual path in /etc/exports, not the fsid=0 alias used by NFSD.
 	// -v gives verbose output on failure for easier debugging.
 	mountArgs := []string{
 		"-v",
 		"-t", "nfs",
 		"-o", fmt.Sprintf("port=%d,mountport=%d,nfsvers=3,tcp,nolock,soft,timeo=30", testNFSPort, testMountdPort),
-		"127.0.0.1:/", nfsMnt,
+		"127.0.0.1:/mnt/linuxfs", nfsMnt,
 	}
 
 	// Retry the mount: the NFS server may need a few extra seconds to export
