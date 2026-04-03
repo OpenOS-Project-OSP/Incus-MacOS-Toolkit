@@ -307,6 +307,10 @@ jobs:
         run: |
           qemu-system-x86_64 --version
           test -e /dev/kvm && echo "KVM: available" || echo "KVM: not available"
+          # Remove any cached VM images that may have been written to directly
+          # by previous runs (before the qcow2 overlay fix). Fresh download
+          # ensures a clean base image.
+          sudo rm -rf /home/runner/.cache/linuxfs/debian/ || true
       - name: Run integration test (as root for NFS mount)
         working-directory: linuxfs
         # sudo -E preserves the Go environment set up by setup-go.
