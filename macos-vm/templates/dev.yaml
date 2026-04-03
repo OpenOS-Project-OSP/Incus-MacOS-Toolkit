@@ -1,0 +1,7 @@
+# imt VM template: dev
+# Development macOS VM with balanced resources.
+description: "Development macOS VM with balanced CPU and memory"
+
+resources:
+  cpu: 4
+  memory: 8GiB

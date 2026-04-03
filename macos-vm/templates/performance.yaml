@@ -1,0 +1,7 @@
+# imt VM template: performance
+# High-resource macOS VM for demanding workloads.
+description: "High-resource macOS VM for demanding workloads"
+
+resources:
+  cpu: 8
+  memory: 16GiB

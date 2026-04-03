@@ -43,6 +43,7 @@ Commands:
   image       Manage macOS disk images (fetch, build)
   vm          Manage macOS VMs in Incus (create, start, stop, backup, restore, ...)
   cloud-sync  Sync VM backups to cloud storage via rclone
+  update      Check for and install imt updates
   doctor      Check prerequisites
   config      Show or initialise configuration
   version     Print version
@@ -163,8 +164,12 @@ cmd_vm() {
         snapshot) cmd_vm_snapshot "$@" ;;
         export)   cmd_vm_export  "$@" ;;
         import)   cmd_vm_import  "$@" ;;
-        fleet)    cmd_vm_fleet   "$@" ;;
-        monitor)  cmd_vm_monitor "$@" ;;
+        fleet)    cmd_vm_fleet    "$@" ;;
+        monitor)  cmd_vm_monitor  "$@" ;;
+        net)      cmd_vm_net      "$@" ;;
+        usb)      cmd_vm_usb      "$@" ;;
+        gpu)      cmd_vm_gpu      "$@" ;;
+        template) cmd_vm_template "$@" ;;
         backup)   cmd_vm_backup  "$@" ;;
         restore)  cmd_vm_restore "$@" ;;
         assemble) cmd_vm_assemble "$@" ;;
@@ -181,11 +186,15 @@ Subcommands:
   status    Show VM info
   console   Attach to the VM console (serial/VGA)
   shell     Open a shell inside the running VM via incus exec
+  template  List and inspect VM creation templates
   snapshot  Create, list, restore, and delete VM snapshots
   export    Publish VM as a reusable Incus image
   import    Create a VM from a published image or backup
   fleet     Multi-VM orchestration (start-all, stop-all, backup-all)
   monitor   Show VM resource usage and stats
+  net       Manage network port forwarding (proxy devices)
+  usb       Manage USB device passthrough
+  gpu       Manage GPU passthrough
   backup    Export the VM and its storage volumes to a directory
   restore   Import a VM from a backup directory
   assemble  Create/update VMs from a declarative YAML file
@@ -217,25 +226,111 @@ _vm_parse_name() {
     VM_NAME="$name"
 }
 
+_imt_template_dir() {
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local d="${IMT_TEMPLATES_DIR:-}"
+    [[ -z "$d" ]] && d="${script_dir}/../templates"
+    [[ -d "$d" ]] && { realpath "$d" 2>/dev/null || echo "$d"; return; }
+    echo "${script_dir}/../templates"
+}
+
+_imt_tpl_get() {
+    local file="$1" key="$2"
+    grep "^${key}:" "${file}" | head -1 | sed "s/^${key}:[[:space:]]*//" | tr -d '"'
+}
+
+_imt_tpl_nested() {
+    local file="$1" section="$2" key="$3"
+    local in_section=false val=""
+    while IFS= read -r line; do
+        echo "${line}" | grep -q "^${section}:" && { in_section=true; continue; }
+        ${in_section} && echo "${line}" | grep -qE "^[a-z]" && break
+        if ${in_section}; then
+            local t="${line#"${line%%[^[:space:]]*}"}"; t="${t%%[[:space:]]}"
+            echo "${t}" | grep -q "^${key}:" && {
+                # shellcheck disable=SC2001  # variable in sed pattern; ${//} cannot replicate
+                val=$(echo "${t}" | sed "s/^${key}:[[:space:]]*//" | tr -d '"'); break; }
+        fi
+    done < "${file}"
+    echo "${val}"
+}
+
+cmd_vm_template() {
+    local subcmd="${1:-list}"; shift || true
+    local tpl_dir; tpl_dir="$(_imt_template_dir)"
+
+    case "${subcmd}" in
+        list|ls)
+            bold "VM Templates: ${tpl_dir}"
+            echo ""
+            printf "  %-14s %s\n" "NAME" "DESCRIPTION"
+            printf "  %-14s %s\n" "----" "-----------"
+            local found=false
+            for f in "${tpl_dir}"/*.yaml; do
+                [[ -f "$f" ]] || continue
+                found=true
+                local n desc
+                n=$(basename "$f" .yaml)
+                desc=$(_imt_tpl_get "$f" "description")
+                printf "  %-14s %s\n" "$n" "$desc"
+            done
+            ${found} || info "No templates found in ${tpl_dir}"
+            echo ""
+            info "Use: imt vm create --template <name> [options]"
+            ;;
+        show)
+            local name="${1:?Usage: imt vm template show <name>}"
+            local f="${tpl_dir}/${name}.yaml"
+            [[ -f "$f" ]] || die "Template not found: ${name}"
+            bold "Template: ${name}"
+            echo ""
+            echo "  Description : $(_imt_tpl_get "$f" "description")"
+            echo "  CPU         : $(_imt_tpl_nested "$f" "resources" "cpu")"
+            echo "  Memory      : $(_imt_tpl_nested "$f" "resources" "memory")"
+            ;;
+        help|--help|-h)
+            echo "Usage: imt vm template <list|show NAME>"
+            ;;
+        *) die "Unknown template subcommand: ${subcmd}" ;;
+    esac
+}
+
 cmd_vm_create() {
     local ram="${IMT_RAM:-4GiB}"
     local cpus="${IMT_CPUS:-4}"
     local version="${IMT_VERSION:-sonoma}"
     local name=""
+    local template=""
 
     # --disk is intentionally absent: disk size is baked into the QCOW2
     # image at build time (imt image build --size). Incus has no
     # limits.disk config key; size is set by the storage volume itself.
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --version) version="$2"; shift 2 ;;
-            --name)    name="$2";    shift 2 ;;
-            --ram)     ram="$2";     shift 2 ;;
-            --cpus)    cpus="$2";    shift 2 ;;
+            --version)  version="$2";  shift 2 ;;
+            --name)     name="$2";     shift 2 ;;
+            --ram)      ram="$2";      shift 2 ;;
+            --cpus)     cpus="$2";     shift 2 ;;
+            --template) template="$2"; shift 2 ;;
             *) die "Unknown option: $1" ;;
         esac
     done
     [[ -z "$name" ]] && name="macos-${version}"
+
+    # Apply template defaults (CLI flags already parsed above take precedence)
+    if [[ -n "${template}" ]]; then
+        local _tdir; _tdir="$(_imt_template_dir)"
+        local _tf="${_tdir}/${template}.yaml"
+        [[ -f "${_tf}" ]] || die "Template not found: ${template} (looked in ${_tdir})"
+        local _tcpu _tmem
+        _tcpu=$(_imt_tpl_nested "${_tf}" "resources" "cpu")
+        _tmem=$(_imt_tpl_nested "${_tf}" "resources" "memory")
+        # Only override if user didn't pass explicit --cpus / --ram
+        [[ -n "${_tcpu}" && "${cpus}" == "${IMT_CPUS:-4}" ]] && cpus="${_tcpu}"
+        [[ -n "${_tmem}" && "${ram}"  == "${IMT_RAM:-4GiB}" ]] && ram="${_tmem}"
+        info "Applying template '${template}': cpu=${cpus} ram=${ram}"
+    fi
 
     require_incus
 
@@ -947,7 +1042,7 @@ _fleet_backup_all() {
     while IFS= read -r vm; do
         [[ -n "${vm}" ]] || continue
         info "Backing up: ${vm}"
-        if cmd_vm_backup --name "${vm}"; then
+        if _cmd_vm_backup_create --name "${vm}"; then
             count=$((count+1))
         else
             warn "  Failed: ${vm}"
@@ -984,6 +1079,8 @@ cmd_vm_monitor() {
         stats)   _monitor_stats  "$@" ;;
         top)     _monitor_top    "$@" ;;
         disk)    _monitor_disk   "$@" ;;
+        uptime)  _monitor_uptime "$@" ;;
+        health)  _monitor_health ;;
         help|--help|-h)
             cat <<EOF
 Usage: imt vm monitor <subcommand> [--name VM]
@@ -993,16 +1090,83 @@ Subcommands:
   stats  [--name VM]   CPU, memory, disk, and network stats
   top                  Live overview of all VMs (refreshes every 2s)
   disk   [--name VM]   Disk usage breakdown
+  uptime [--name VM]   VM uptime and creation history
+  health               Host-level health check
 
 Examples:
   imt vm monitor status --name macos-sonoma
   imt vm monitor stats  --name macos-sonoma
   imt vm monitor top
   imt vm monitor disk   --name macos-sonoma
+  imt vm monitor uptime --name macos-sonoma
+  imt vm monitor health
 EOF
             ;;
         *) die "Unknown monitor subcommand: ${subcmd}. Run: imt vm monitor help" ;;
     esac
+}
+
+_monitor_uptime() {
+    local vm_name
+    vm_name=$(_monitor_parse_name "$@")
+    require_incus
+    incus info "${vm_name}" &>/dev/null || die "VM '${vm_name}' not found"
+
+    local info_out status created last_used
+    info_out=$(incus info "${vm_name}" 2>/dev/null)
+    status=$(echo "${info_out}"    | grep "^Status:"    | awk '{print $2}')
+    created=$(echo "${info_out}"   | grep "^Created:"   | sed 's/^Created:[[:space:]]*//')
+    last_used=$(echo "${info_out}" | grep "^Last Used:" | sed 's/^Last Used:[[:space:]]*//')
+
+    bold "Uptime: ${vm_name}"
+    echo ""
+    echo "  Created   : ${created:-unknown}"
+    echo "  Last used : ${last_used:-unknown}"
+    echo "  Status    : ${status:-unknown}"
+
+    local snaps
+    snaps=$(echo "${info_out}" | grep -A1 "^Snapshots:" | tail -1 || true)
+    if [[ -n "${snaps}" && "${snaps}" != *"Snapshots:"* ]]; then
+        echo ""
+        info "Recent snapshots:"
+        echo "${info_out}" | sed -n '/^Snapshots:/,/^$/p' | tail -n +2 | head -5 | sed 's/^/  /'
+    fi
+}
+
+_monitor_health() {
+    bold "imt System Health"
+    echo ""
+
+    if incus info >/dev/null 2>&1; then
+        ok "Incus daemon: reachable"
+    else
+        err "Incus daemon: not reachable"
+    fi
+
+    if [[ -e /dev/kvm ]]; then
+        ok "KVM: available"
+    else
+        warn "KVM: /dev/kvm not found"
+    fi
+
+    local pools networks vm_total vm_running
+    pools=$(incus storage list --format csv 2>/dev/null | wc -l || echo "0")
+    networks=$(incus network list --format csv 2>/dev/null | wc -l || echo "0")
+    vm_total=$(incus list --format csv -c t 2>/dev/null | grep -c "virtual-machine" || echo "0")
+    vm_running=$(incus list --format csv -c s,t 2>/dev/null | grep -c "RUNNING,virtual-machine" || echo "0")
+    echo "  Storage pools : ${pools}"
+    echo "  Networks      : ${networks}"
+    echo "  VMs           : ${vm_running} running / ${vm_total} total"
+
+    echo ""
+    info "Host disk:"
+    df -h / 2>/dev/null | tail -1 | awk '{printf "  Used: %s / %s (%s)\n", $3, $2, $5}'
+
+    info "Host memory:"
+    free -h 2>/dev/null | grep "^Mem:" | awk '{printf "  Used: %s / %s\n", $3, $2}' || true
+
+    echo ""
+    ok "Health check complete"
 }
 
 _monitor_parse_name() {
@@ -1143,21 +1307,60 @@ _monitor_disk() {
     done
 }
 
+_IMT_BACKUP_STORE="${IMT_BACKUP_STORE:-${HOME}/.local/share/imt/vm-backups}"
+
 cmd_vm_backup() {
+    local subcmd="${1:-create}"
+    # If first arg looks like an option or is absent, treat as 'create'
+    [[ "${subcmd}" == -* ]] && subcmd="create"
+    case "${subcmd}" in
+        create|list|ls|delete|rm|help|--help|-h) shift || true ;;
+        *) subcmd="create" ;;
+    esac
+
+    case "${subcmd}" in
+        create)  _cmd_vm_backup_create "$@" ;;
+        list|ls) _cmd_vm_backup_list ;;
+        delete|rm) _cmd_vm_backup_delete "$@" ;;
+        help|--help|-h)
+            cat <<EOF
+Usage: imt vm backup <subcommand> [options]
+
+Subcommands:
+  create [options]    Back up a VM and its storage volumes
+  list                List available local backups
+  delete NAME         Delete a local backup directory
+
+Create options:
+  --name VM           VM name (default: macos-<version>)
+  --version VER       macOS version (default: \${IMT_VERSION:-sonoma})
+  --output|-o DIR     Output directory (default: auto-named in \$IMT_BACKUP_STORE)
+
+Backup store: \${IMT_BACKUP_STORE:-~/.local/share/imt/vm-backups}
+EOF
+            ;;
+        *) die "Unknown backup subcommand: ${subcmd}. Run: imt vm backup help" ;;
+    esac
+}
+
+_cmd_vm_backup_create() {
     local output_dir=""
     local version="${IMT_VERSION:-sonoma}"
     local name=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --version)  version="$2";     shift 2 ;;
-            --name)     name="$2";        shift 2 ;;
+            --version)   version="$2";    shift 2 ;;
+            --name)      name="$2";       shift 2 ;;
             --output|-o) output_dir="$2"; shift 2 ;;
             *) die "Unknown option: $1" ;;
         esac
     done
     [[ -z "$name" ]] && name="macos-${version}"
-    [[ -z "$output_dir" ]] && output_dir="${name}-backup-$(date +%Y%m%d-%H%M%S)"
+    if [[ -z "$output_dir" ]]; then
+        mkdir -p "${_IMT_BACKUP_STORE}"
+        output_dir="${_IMT_BACKUP_STORE}/${name}-backup-$(date +%Y%m%d-%H%M%S)"
+    fi
 
     require_incus
 
@@ -1187,6 +1390,50 @@ cmd_vm_backup() {
     echo ""
     bold "To restore:"
     echo "  imt vm restore --name $name --from $output_dir"
+}
+
+_cmd_vm_backup_list() {
+    mkdir -p "${_IMT_BACKUP_STORE}"
+    bold "VM Backups: ${_IMT_BACKUP_STORE}"
+    echo ""
+    printf "  %-40s %-12s %s\n" "NAME" "SIZE" "DATE"
+    printf "  %-40s %-12s %s\n" "----" "----" "----"
+
+    local found=false
+    for d in "${_IMT_BACKUP_STORE}"/*/; do
+        [[ -d "$d" ]] || continue
+        found=true
+        local bname size date_str
+        bname="$(basename "$d")"
+        size="$(du -sh "$d" 2>/dev/null | awk '{print $1}' || echo "?")"
+        date_str="$(stat -c%y "$d" 2>/dev/null | cut -d. -f1 || stat -f%Sm "$d" 2>/dev/null || echo "unknown")"
+        printf "  %-40s %-12s %s\n" "$bname" "$size" "$date_str"
+    done
+
+    if [[ "$found" == false ]]; then
+        info "  No backups found in ${_IMT_BACKUP_STORE}"
+    fi
+    echo ""
+    info "Backup store: ${_IMT_BACKUP_STORE}"
+}
+
+_cmd_vm_backup_delete() {
+    local backup_name=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h) cmd_vm_backup help; return ;;
+            -*) die "Unknown option: $1" ;;
+            *) backup_name="$1"; shift ;;
+        esac
+    done
+    [[ -n "$backup_name" ]] || die "Backup name required. Usage: imt vm backup delete <name>"
+
+    local backup_path="${_IMT_BACKUP_STORE}/${backup_name}"
+    [[ -d "$backup_path" ]] || die "Backup not found: ${backup_path}"
+
+    info "Deleting backup: $backup_name"
+    rm -rf "$backup_path"
+    ok "Backup deleted: $backup_name"
 }
 
 cmd_vm_restore() {
@@ -1374,6 +1621,410 @@ cmd_config() {
 
 cmd_version() {
     echo "imt $VERSION"
+}
+
+# ── Net / port forwarding ─────────────────────────────────────────────────────
+
+cmd_vm_net() {
+    local subcmd="${1:-help}"; shift || true
+
+    case "${subcmd}" in
+        forward|fwd)
+            local host_port="${1:?Usage: imt vm net forward HOST_PORT [CONTAINER_PORT] [--proto tcp|udp] [--name VM]}"
+            shift
+            local container_port="${host_port}"
+            local proto="tcp"
+            local listen_addr="0.0.0.0"
+            local proxy_name=""
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --proto)   proto="$2";        shift 2 ;;
+                    --listen)  listen_addr="$2";  shift 2 ;;
+                    --proxy)   proxy_name="$2";   shift 2 ;;
+                    --version) version="$2";      shift 2 ;;
+                    --name)    vm_name="$2";       shift 2 ;;
+                    -*) die "Unknown option: $1" ;;
+                    *)  container_port="$1";      shift ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            [[ -z "${proxy_name}" ]] && proxy_name="fwd-${host_port}"
+            require_incus
+            info "Adding port forward: ${listen_addr}:${host_port} → ${vm_name}:${container_port} (${proto})"
+            incus config device add "${vm_name}" "${proxy_name}" proxy \
+                "listen=${proto}:${listen_addr}:${host_port}" \
+                "connect=${proto}:127.0.0.1:${container_port}"
+            ok "Port forward added: ${proxy_name}"
+            info "  Host     : ${listen_addr}:${host_port}"
+            info "  VM       : 127.0.0.1:${container_port}"
+            ;;
+
+        unforward|unfwd|rm)
+            local proxy_name="${1:?Usage: imt vm net unforward PROXY_NAME [--name VM]}"
+            shift
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            incus config device remove "${vm_name}" "${proxy_name}"
+            ok "Removed port forward: ${proxy_name}"
+            ;;
+
+        list|ls)
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            bold "Port forwards: ${vm_name}"
+            echo ""
+            printf "  %-20s %-30s %s\n" "DEVICE" "LISTEN" "CONNECT"
+            printf "  %-20s %-30s %s\n" "------" "------" "-------"
+            local found=false
+            while IFS= read -r dev; do
+                [[ -n "${dev}" ]] || continue
+                local listen connect
+                listen=$(incus config device get "${vm_name}" "${dev}" listen 2>/dev/null || echo "")
+                connect=$(incus config device get "${vm_name}" "${dev}" connect 2>/dev/null || echo "")
+                [[ -n "${listen}" ]] || continue
+                found=true
+                printf "  %-20s %-30s %s\n" "${dev}" "${listen}" "${connect}"
+            done < <(incus config device list "${vm_name}" 2>/dev/null | grep "proxy" | awk '{print $1}' || true)
+            ${found} || info "  No port forwards configured"
+            ;;
+
+        status)
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            bold "Network status: ${vm_name}"
+            echo ""
+            incus info "${vm_name}" 2>/dev/null | awk '
+                /^Network usage:/ { in_net=1; next }
+                in_net && /^[A-Z]/ { in_net=0 }
+                in_net { print "  " $0 }
+            '
+            echo ""
+            info "Proxy devices:"
+            incus config device show "${vm_name}" 2>/dev/null \
+            | awk '/type: proxy/{found=1} found{print "  " $0; if(/^$/)found=0}' \
+            || info "  None"
+            ;;
+
+        help|--help|-h)
+            cat <<EOF
+Usage: imt vm net <subcommand> [--name VM] [options]
+
+Subcommands:
+  forward HOST_PORT [CONTAINER_PORT]   Add a port forward proxy device
+  unforward PROXY_NAME                 Remove a port forward
+  list                                 List all port forwards
+  status                               Show network interfaces and forwards
+
+Options:
+  --name VM       VM name (default: macos-<version>)
+  --version VER   macOS version (default: \${IMT_VERSION:-sonoma})
+  --proto tcp|udp Protocol (default: tcp)
+  --listen ADDR   Listen address (default: 0.0.0.0)
+
+Examples:
+  imt vm net forward 8080 --name macos-sonoma
+  imt vm net forward 8080 80 --proto tcp --name macos-sonoma
+  imt vm net list --name macos-sonoma
+  imt vm net unforward fwd-8080 --name macos-sonoma
+  imt vm net status --name macos-sonoma
+EOF
+            ;;
+        *) die "Unknown net subcommand: ${subcmd}. Run: imt vm net help" ;;
+    esac
+}
+
+# ── GPU passthrough ───────────────────────────────────────────────────────────
+
+cmd_vm_gpu() {
+    local subcmd="${1:-help}"; shift || true
+
+    case "${subcmd}" in
+        list-host|host)
+            bold "GPUs available on host:"
+            echo ""
+            if incus info --resources >/dev/null 2>&1; then
+                incus info --resources 2>/dev/null | awk '
+                    /^  GPUs:/,/^  [A-Z][a-z]/ {
+                        if (!/^  GPUs:/ && !/^  [A-Z][a-z]/) print "  " $0
+                    }
+                '
+            else
+                warn "Could not retrieve GPU info from incus"
+            fi
+            if command -v lspci >/dev/null 2>&1; then
+                echo ""
+                info "PCI GPU devices:"
+                lspci 2>/dev/null | grep -iE "VGA|3D|Display|NVIDIA|AMD|Intel.*Graphics" \
+                | sed 's/^/  /' || info "  None found"
+            fi
+            ;;
+
+        attach|add)
+            local gpu_type="physical" pci_addr="" dev_name="gpu0" vendor=""
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --type)     gpu_type="$2"; shift 2 ;;
+                    --pci)      pci_addr="$2"; shift 2 ;;
+                    --dev-name) dev_name="$2"; shift 2 ;;
+                    --vendor)   vendor="$2";   shift 2 ;;
+                    --version)  version="$2";  shift 2 ;;
+                    --name)     vm_name="$2";  shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            local device_args=("${vm_name}" "${dev_name}" gpu "gputype=${gpu_type}")
+            [[ -n "${pci_addr}" ]] && device_args+=("pci=${pci_addr}")
+            [[ -n "${vendor}" ]]   && device_args+=("vendorid=${vendor}")
+            info "Attaching GPU to '${vm_name}' (type=${gpu_type}${pci_addr:+, pci=${pci_addr}})"
+            incus config device add "${device_args[@]}"
+            ok "GPU attached: ${dev_name} → ${vm_name}"
+            info "  Type : ${gpu_type}"
+            [[ -n "${pci_addr}" ]] && info "  PCI  : ${pci_addr}"
+            ;;
+
+        detach|remove|rm)
+            local dev_name="${1:?Usage: imt vm gpu detach DEV_NAME [--name VM]}"
+            shift
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            incus config device remove "${vm_name}" "${dev_name}"
+            ok "GPU removed: ${dev_name} from '${vm_name}'"
+            ;;
+
+        list|ls)
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            bold "GPUs attached to '${vm_name}':"
+            echo ""
+            printf "  %-20s %-12s %s\n" "DEVICE" "TYPE" "PCI"
+            printf "  %-20s %-12s %s\n" "------" "----" "---"
+            local found=false
+            while IFS= read -r dev; do
+                [[ -n "${dev}" ]] || continue
+                local gtype pci
+                gtype=$(incus config device get "${vm_name}" "${dev}" gputype  2>/dev/null || echo "physical")
+                pci=$(incus config device get   "${vm_name}" "${dev}" pci      2>/dev/null || echo "")
+                found=true
+                printf "  %-20s %-12s %s\n" "${dev}" "${gtype}" "${pci}"
+            done < <(incus config device list "${vm_name}" 2>/dev/null | grep "gpu" | awk '{print $1}' || true)
+            ${found} || info "  No GPU devices attached"
+            ;;
+
+        status)
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            bold "GPU status: ${vm_name}"
+            echo ""
+            cmd_vm_gpu list --name "${vm_name}"
+            echo ""
+            info "Host GPU resources:"
+            incus info --resources 2>/dev/null | awk '
+                /^  GPUs:/,/^  [A-Z][a-z]/ {
+                    if (!/^  GPUs:/ && !/^  [A-Z][a-z]/) print "  " $0
+                }
+            ' || true
+            ;;
+
+        help|--help|-h)
+            cat <<EOF
+Usage: imt vm gpu <subcommand> [--name VM] [options]
+
+Subcommands:
+  list-host              List GPUs available on the host
+  attach                 Attach a GPU to the VM
+  detach DEV_NAME        Remove a GPU from the VM
+  list                   List GPUs attached to the VM
+  status                 Show GPU status
+
+Attach options:
+  --type physical|mdev|mig|virtio   GPU type (default: physical)
+  --pci ADDR                        PCI address (e.g. 0000:01:00.0)
+  --dev-name NAME                   Device name (default: gpu0)
+  --vendor VENDOR                   GPU vendor filter
+
+Options:
+  --name VM       VM name (default: macos-<version>)
+  --version VER   macOS version (default: \${IMT_VERSION:-sonoma})
+
+Examples:
+  imt vm gpu list-host
+  imt vm gpu attach --name macos-sonoma
+  imt vm gpu attach --pci 0000:01:00.0 --type physical --name macos-sonoma
+  imt vm gpu list --name macos-sonoma
+  imt vm gpu detach gpu0 --name macos-sonoma
+EOF
+            ;;
+        *) die "Unknown gpu subcommand: ${subcmd}. Run: imt vm gpu help" ;;
+    esac
+}
+
+# ── USB passthrough ───────────────────────────────────────────────────────────
+
+cmd_vm_usb() {
+    local subcmd="${1:-help}"; shift || true
+
+    case "${subcmd}" in
+        list-host|host)
+            bold "USB devices on host:"
+            echo ""
+            if command -v lsusb >/dev/null 2>&1; then
+                printf "  %-12s %s\n" "VENDOR:ID" "DESCRIPTION"
+                printf "  %-12s %s\n" "---------" "-----------"
+                lsusb | while IFS= read -r line; do
+                    local vid pid desc
+                    vid=$(echo "${line}" | awk '{print $6}' | cut -d: -f1)
+                    pid=$(echo "${line}" | awk '{print $6}' | cut -d: -f2)
+                    desc=$(echo "${line}" | cut -d: -f3- | sed 's/^ //')
+                    printf "  %-12s %s\n" "${vid}:${pid}" "${desc}"
+                done
+            else
+                warn "lsusb not found — install usbutils"
+            fi
+            ;;
+
+        attach|add)
+            local vid="${1:?Usage: imt vm usb attach VID PID [--name VM]}"
+            local pid="${2:?Usage: imt vm usb attach VID PID [--name VM]}"
+            shift 2
+            local dev_name="" version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --dev-name) dev_name="$2"; shift 2 ;;
+                    --version)  version="$2";  shift 2 ;;
+                    --name)     vm_name="$2";  shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            [[ -z "${dev_name}" ]] && dev_name="usb-${vid}-${pid}"
+            require_incus
+            info "Attaching USB ${vid}:${pid} to '${vm_name}' as '${dev_name}'"
+            incus config device add "${vm_name}" "${dev_name}" usb \
+                "vendorid=${vid}" "productid=${pid}"
+            ok "USB device attached: ${dev_name} (${vid}:${pid}) → ${vm_name}"
+            ;;
+
+        detach|remove|rm)
+            local dev_name="${1:?Usage: imt vm usb detach DEV_NAME [--name VM]}"
+            shift
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            incus config device remove "${vm_name}" "${dev_name}"
+            ok "USB device removed: ${dev_name} from '${vm_name}'"
+            ;;
+
+        list|ls)
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            bold "USB devices attached to '${vm_name}':"
+            echo ""
+            printf "  %-20s %-10s %s\n" "DEVICE" "VENDOR" "PRODUCT"
+            printf "  %-20s %-10s %s\n" "------" "------" "-------"
+            local found=false
+            while IFS= read -r dev; do
+                [[ -n "${dev}" ]] || continue
+                local vid pid
+                vid=$(incus config device get "${vm_name}" "${dev}" vendorid  2>/dev/null || echo "")
+                pid=$(incus config device get "${vm_name}" "${dev}" productid 2>/dev/null || echo "")
+                [[ -n "${vid}" ]] || continue
+                found=true
+                printf "  %-20s %-10s %s\n" "${dev}" "${vid}" "${pid}"
+            done < <(incus config device list "${vm_name}" 2>/dev/null | grep "usb" | awk '{print $1}' || true)
+            ${found} || info "  No USB devices attached"
+            ;;
+
+        help|--help|-h)
+            cat <<EOF
+Usage: imt vm usb <subcommand> [--name VM] [options]
+
+Subcommands:
+  list-host              List USB devices available on the host
+  attach VID PID         Attach a USB device to the VM
+  detach DEV_NAME        Remove a USB device from the VM
+  list                   List USB devices attached to the VM
+
+Options:
+  --name VM       VM name (default: macos-<version>)
+  --version VER   macOS version (default: \${IMT_VERSION:-sonoma})
+  --dev-name NAME Custom device name for attach (default: usb-<VID>-<PID>)
+
+Examples:
+  imt vm usb list-host
+  imt vm usb attach 046d c52b --name macos-sonoma
+  imt vm usb list --name macos-sonoma
+  imt vm usb detach usb-046d-c52b --name macos-sonoma
+EOF
+            ;;
+        *) die "Unknown usb subcommand: ${subcmd}. Run: imt vm usb help" ;;
+    esac
 }
 
 # ── Cloud sync ────────────────────────────────────────────────────────────────
@@ -1575,6 +2226,122 @@ EOF
     esac
 }
 
+# ── Self-update ───────────────────────────────────────────────────────────────
+
+_IMT_GITHUB_REPO="Interested-Deving-1896/Incus-MacOS-Toolkit"
+_IMT_GITHUB_API="https://api.github.com/repos/${_IMT_GITHUB_REPO}/releases/latest"
+_IMT_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_IMT_ROOT="$(cd "${_IMT_SCRIPT_DIR}/.." && pwd)"
+
+_imt_version_gt() {
+    local v1="${1#v}" v2="${2#v}"
+    local IFS=.
+    # shellcheck disable=SC2206
+    local a1=($v1) a2=($v2)
+    local i
+    for i in 0 1 2; do
+        local n1="${a1[$i]:-0}" n2="${a2[$i]:-0}"
+        [[ "$n1" -gt "$n2" ]] && return 0
+        [[ "$n1" -lt "$n2" ]] && return 1
+    done
+    return 1
+}
+
+_imt_fetch_release() {
+    curl --disable --silent --fail \
+        -H "Accept: application/vnd.github.v3+json" \
+        "${_IMT_GITHUB_API}" 2>/dev/null \
+    || { warn "Could not reach GitHub API"; return 1; }
+}
+
+cmd_update() {
+    local subcmd="${1:-check}"; shift || true
+
+    case "${subcmd}" in
+        check)
+            local current="${VERSION}"
+            info "Current version : v${current}"
+            info "Checking GitHub for updates..."
+
+            local release_json latest_tag latest
+            release_json=$(_imt_fetch_release) || {
+                info "Check manually: https://github.com/${_IMT_GITHUB_REPO}/releases"
+                return 1
+            }
+            latest_tag=$(echo "${release_json}" | grep '"tag_name"' | head -1 \
+                         | sed 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/')
+            latest="${latest_tag#v}"
+            [[ -n "${latest}" ]] || { warn "Could not determine latest version"; return 1; }
+            info "Latest version  : v${latest}"
+
+            if _imt_version_gt "${latest}" "${current}"; then
+                echo ""
+                ok "Update available: v${current} → v${latest}"
+                info "Update with: imt update install"
+            else
+                ok "imt is up to date (v${current})"
+            fi
+            ;;
+
+        install|upgrade)
+            local current="${VERSION}"
+            info "Current version : v${current}"
+            info "Fetching latest release..."
+
+            local release_json latest_tag latest tarball_url
+            release_json=$(_imt_fetch_release) || die "Could not reach GitHub API"
+            latest_tag=$(echo "${release_json}" | grep '"tag_name"' | head -1 \
+                         | sed 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/')
+            latest="${latest_tag#v}"
+            [[ -n "${latest}" ]] || die "Could not determine latest version"
+
+            if ! _imt_version_gt "${latest}" "${current}"; then
+                ok "Already up to date (v${current})"
+                return 0
+            fi
+
+            info "Updating: v${current} → v${latest}"
+            tarball_url=$(echo "${release_json}" | grep '"tarball_url"' | head -1 \
+                          | sed 's/.*"tarball_url":[[:space:]]*"\([^"]*\)".*/\1/')
+            [[ -n "${tarball_url}" ]] || die "No tarball URL in release"
+
+            if [[ -d "${_IMT_ROOT}/.git" ]]; then
+                info "Git repository detected — pulling latest..."
+                ( cd "${_IMT_ROOT}" && git fetch origin \
+                  && git checkout "v${latest}" 2>/dev/null \
+                  || git pull origin main ) || die "Git pull failed"
+                ok "Updated via git to v${latest}"
+            else
+                local tmp_dir; tmp_dir=$(mktemp -d)
+                info "Downloading v${latest}..."
+                curl --disable --silent --location --fail \
+                    --output "${tmp_dir}/imt-${latest}.tar.gz" "${tarball_url}" \
+                    || die "Download failed"
+                info "Extracting..."
+                tar xzf "${tmp_dir}/imt-${latest}.tar.gz" -C "${tmp_dir}" --strip-components=1
+                info "Installing..."
+                ( cd "${tmp_dir}" && bash macos-vm/install 2>/dev/null \
+                  || cp -r . "${_IMT_ROOT}/" ) || die "Install failed"
+                rm -rf "${tmp_dir}"
+                ok "Updated to v${latest}"
+            fi
+            ;;
+
+        help|--help|-h)
+            cat <<EOF
+imt update — check for and install imt updates
+
+Usage: imt update [check|install]
+
+Subcommands:
+  check     Check for a newer version (default)
+  install   Download and install the latest version
+EOF
+            ;;
+        *) die "Unknown update subcommand: ${subcmd}" ;;
+    esac
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 main() {
@@ -1583,6 +2350,7 @@ main() {
         image)          cmd_image      "$@" ;;
         vm)             cmd_vm         "$@" ;;
         cloud-sync)     cmd_cloud_sync "$@" ;;
+        update)         cmd_update     "$@" ;;
         doctor)         cmd_doctor     "$@" ;;
         config)         cmd_config     "$@" ;;
         version|--version) cmd_version ;;

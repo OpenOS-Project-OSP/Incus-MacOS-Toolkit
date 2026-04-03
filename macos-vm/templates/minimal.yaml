@@ -1,0 +1,7 @@
+# imt VM template: minimal
+# Low-resource macOS VM for testing or lightweight tasks.
+description: "Minimal macOS VM for testing with low resource usage"
+
+resources:
+  cpu: 2
+  memory: 4GiB
