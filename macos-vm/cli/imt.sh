@@ -45,8 +45,9 @@ Commands:
   cloud-sync  Sync VM backups to cloud storage via rclone
   demo        Manage a local incus-demo-server instance
   winesapos   Fetch, import, and launch winesapOS gaming VMs
-  profiles    Manage Incus profiles (list, install, diff, apply)
-  update      Check for and install imt updates
+  profiles        Manage Incus profiles (list, install, diff, apply)
+  setup-rootless  Configure the system for rootless VM operation via incus-user
+  update          Check for and install imt updates
   doctor      Check prerequisites
   config      Show or initialise configuration
   version     Print version
@@ -2325,6 +2326,183 @@ EOF
     esac
 }
 
+# ── setup-rootless ───────────────────────────────────────────────────────────
+
+cmd_setup_rootless() {
+    # Guided setup for running macOS VMs as a non-root user via incus-user.
+    #
+    # Checks and optionally fixes:
+    #   1. Not running as root
+    #   2. incus-user daemon (systemd user service + socket)
+    #   3. KVM device access (/dev/kvm, kvm group)
+    #   4. subuid/subgid delegation
+    #   5. macos-kvm Incus profile registered in incus-user
+    #
+    # Usage: imt setup-rootless [--fix] [--yes] [--help]
+
+    local fix=0
+    local issues=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --fix)       fix=1; shift ;;
+            -Y|--yes)    fix=1; shift ;;
+            --help|-h)
+                cat <<EOF
+imt setup-rootless — configure the system for rootless macOS VM operation
+
+Checks and configures:
+  1. User is not root
+  2. incus-user daemon (systemd user service)
+  3. KVM device access (/dev/kvm, kvm group membership)
+  4. UID/GID delegation (subuid/subgid)
+  5. macos-kvm Incus profile registered in incus-user
+
+Usage: imt setup-rootless [--fix] [--yes]
+
+Options:
+  --fix    Attempt to automatically fix detected issues
+  --yes    Non-interactive (implies --fix)
+EOF
+                return 0 ;;
+            *) die "Unknown option: $1. Run: imt setup-rootless --help" ;;
+        esac
+    done
+
+    _sr_ok()   { printf '  \033[32m✔\033[0m  %s\n' "$*"; }
+    _sr_warn() { printf '  \033[33m⚠\033[0m  %s\n' "$*"; }
+    _sr_fail() { printf '  \033[31m✘\033[0m  %s\n' "$*"; issues=$((issues+1)); }
+    _sr_section() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+    _sr_ask_fix() {
+        local msg="$1" cmd="$2"
+        if [[ "$fix" -eq 1 ]]; then
+            info "  Fixing: $msg"
+            if eval "$cmd"; then
+                _sr_ok "Fixed: $msg"
+            else
+                _sr_fail "Failed to fix: $msg"
+            fi
+        else
+            _sr_warn "$msg"
+            info "    Run: $cmd"
+            issues=$((issues+1))
+        fi
+    }
+
+    # 1. Not root
+    _sr_section "1. User check"
+    if [[ "$(id -ru)" -eq 0 ]]; then
+        die "Run as a regular user, not root."
+    fi
+    _sr_ok "Running as ${USER} (uid=$(id -ru))"
+
+    # 2. incus-user daemon
+    _sr_section "2. incus-user daemon"
+    local incus_user_socket="${XDG_RUNTIME_DIR:-/run/user/$(id -ru)}/incus/incus.socket"
+
+    if ! command -v incus &>/dev/null; then
+        _sr_fail "incus not found — install Incus: https://linuxcontainers.org/incus/"
+    else
+        _sr_ok "incus found: $(incus --version 2>/dev/null || true)"
+    fi
+
+    if [[ -S "${incus_user_socket}" ]]; then
+        _sr_ok "incus-user socket: ${incus_user_socket}"
+    else
+        if systemctl --user list-unit-files incus-user.service &>/dev/null 2>&1; then
+            if systemctl --user is-active incus-user.service &>/dev/null 2>&1; then
+                _sr_warn "incus-user.service active but socket not found — check: systemctl --user status incus-user.service"
+                issues=$((issues+1))
+            else
+                _sr_ask_fix \
+                    "Start and enable incus-user.service" \
+                    "systemctl --user enable --now incus-user.service"
+            fi
+        else
+            _sr_fail "incus-user.service not found — install incus-user package"
+        fi
+    fi
+
+    # 3. KVM access
+    _sr_section "3. KVM device access"
+    if [[ -c /dev/kvm ]]; then
+        local kvm_group
+        kvm_group="$(stat -c '%G' /dev/kvm 2>/dev/null || echo kvm)"
+        if id -nG "${USER}" | grep -qw "${kvm_group}"; then
+            _sr_ok "/dev/kvm accessible (member of group ${kvm_group})"
+        else
+            _sr_ask_fix \
+                "Add ${USER} to ${kvm_group} group for /dev/kvm access" \
+                "sudo usermod -aG ${kvm_group} ${USER}"
+            _sr_warn "Log out and back in (or run: newgrp ${kvm_group}) for group change to take effect"
+        fi
+    else
+        _sr_fail "/dev/kvm not found — KVM not available on this host"
+        info "    Check: lsmod | grep kvm && ls -la /dev/kvm"
+    fi
+
+    # 4. subuid/subgid
+    _sr_section "4. UID/GID delegation (subuid/subgid)"
+    for pair in "subuid:subuid" "subgid:subgid"; do
+        local file="/etc/${pair%%:*}" label="${pair##*:}"
+        if grep -q "^${USER}:" "${file}" 2>/dev/null; then
+            local range
+            range="$(grep "^${USER}:" "${file}" | head -1)"
+            _sr_ok "${label}: ${range}"
+        else
+            _sr_ask_fix \
+                "Add ${USER} to ${file}" \
+                "sudo usermod --add-sub${label}s 65536-131071 ${USER}"
+        fi
+    done
+
+    # 5. macos-kvm profile in incus-user
+    _sr_section "5. macos-kvm Incus profile"
+    local incus_cmd="incus"
+    [[ -S "${incus_user_socket}" ]] && export INCUS_SOCKET="${incus_user_socket}"
+
+    if ${incus_cmd} profile show macos-kvm &>/dev/null 2>&1; then
+        _sr_ok "macos-kvm profile registered"
+    else
+        local profile_yaml=""
+        local search_dir
+        search_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        for f in \
+            "${search_dir}/../incus/profile.yaml" \
+            "${HOME}/.local/share/imt/profiles/macos-kvm.yaml" \
+            "/usr/local/share/imt/profiles/macos-kvm.yaml"; do
+            [[ -f "$f" ]] && profile_yaml="$f" && break
+        done
+
+        if [[ -n "${profile_yaml}" ]]; then
+            _sr_ask_fix \
+                "Register macos-kvm profile" \
+                "${incus_cmd} profile create macos-kvm && ${incus_cmd} profile edit macos-kvm < ${profile_yaml}"
+        else
+            _sr_warn "macos-kvm profile not registered and YAML not found"
+            info "    Run: imt profiles install"
+            issues=$((issues+1))
+        fi
+    fi
+
+    # Summary
+    printf '\n'
+    if [[ "${issues}" -eq 0 ]]; then
+        printf '\033[32mAll checks passed. Rootless imt is ready.\033[0m\n\n'
+        printf 'Quick start:\n'
+        printf '  imt vm create --version sonoma --name macos-sonoma\n'
+    else
+        printf '\033[33m%d issue(s) found.\033[0m\n' "${issues}"
+        if [[ "${fix}" -eq 0 ]]; then
+            printf 'Re-run with --fix to attempt automatic fixes:\n'
+            printf '  imt setup-rootless --fix\n'
+        else
+            printf 'Some issues could not be fixed automatically.\n'
+        fi
+    fi
+}
+
 # ── profiles ─────────────────────────────────────────────────────────────────
 
 cmd_profiles() {
@@ -2899,6 +3077,7 @@ main() {
         demo)           cmd_demo       "$@" ;;
         winesapos)      cmd_winesapos  "$@" ;;
         profiles)       cmd_profiles   "$@" ;;
+        setup-rootless) cmd_setup_rootless "$@" ;;
         update)         cmd_update     "$@" ;;
         doctor)         cmd_doctor     "$@" ;;
         config)         cmd_config     "$@" ;;
