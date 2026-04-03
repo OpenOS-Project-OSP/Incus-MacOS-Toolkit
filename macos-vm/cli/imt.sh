@@ -1734,9 +1734,11 @@ EOF
         local snap_name
         snap_name="pre-upgrade-$(date +%Y%m%d-%H%M%S)"
         info "Creating pre-upgrade snapshot: $snap_name"
-        incus snapshot create "$name" "$snap_name" \
-            && ok "Snapshot created: $snap_name" \
-            || warn "Snapshot failed — continuing without it"
+        if incus snapshot create "$name" "$snap_name"; then
+            ok "Snapshot created: $snap_name"
+        else
+            warn "Snapshot failed — continuing without it"
+        fi
     fi
 
     info "Running Software Update in '$name' (this may take a while)..."
