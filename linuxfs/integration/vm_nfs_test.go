@@ -148,7 +148,7 @@ func TestVMBootMountNFS(t *testing.T) {
 	t.Logf("Share URL: %s", shareURL)
 
 	// Log NFS server state for debugging.
-	if out, err := v.Run("sudo exportfs -v 2>&1; echo '---'; sudo ss -tlnp 2>&1 | grep -E ':2049|:20048|:111'; echo '---'; sudo rpcinfo -p 2>&1 || true; echo '---'; cat /etc/exports 2>&1; echo '---'; cat /etc/hosts.allow /etc/hosts.deny 2>&1 || true; echo '---'; mount | grep linuxfs 2>&1 || true"); err == nil {
+	if out, err := v.Run("sudo exportfs -v 2>&1; echo '---'; sudo ss -tlnp 2>&1 | grep -E ':2049|:20048|:111'; echo '---'; sudo rpcinfo -p 2>&1 || true; echo '---'; cat /etc/exports 2>&1; echo '---'; mount | grep linuxfs 2>&1 || true; echo '---'; sudo journalctl -u nfs-mountd --no-pager -n 20 2>&1 || true"); err == nil {
 		t.Logf("NFS server state:\n%s", out)
 	}
 

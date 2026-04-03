@@ -282,10 +282,13 @@ fi
 # host NFS client appear as 127.0.0.1 inside the VM.
 EXPORT_PATH='%s'
 EXPORT_OPTS='rw,sync,no_subtree_check,no_root_squash,insecure,fsid=0%s'
-# Always rewrite the exports file to ensure both entries are present.
+# Always rewrite the exports file to ensure all client IPs are covered.
+# Include 127.0.0.1, 10.0.2.2 (QEMU gateway), and 0.0.0.0/0 because
+# the source IP seen by mountd depends on QEMU's network implementation.
 grep -v "^${EXPORT_PATH}" /etc/exports > /tmp/exports.tmp 2>/dev/null || true
-printf "${EXPORT_PATH} 127.0.0.1(${EXPORT_OPTS})\n${EXPORT_PATH} 0.0.0.0/0(${EXPORT_OPTS})\n" \
-    >> /tmp/exports.tmp
+printf "${EXPORT_PATH} 127.0.0.1(${EXPORT_OPTS})\n" >> /tmp/exports.tmp
+printf "${EXPORT_PATH} 10.0.2.2(${EXPORT_OPTS})\n" >> /tmp/exports.tmp
+printf "${EXPORT_PATH} 0.0.0.0/0(${EXPORT_OPTS})\n" >> /tmp/exports.tmp
 cp /tmp/exports.tmp /etc/exports
 
 # Allow all NFS-related RPC services through TCP wrappers (if present).
