@@ -277,14 +277,16 @@ fi
 	fmt.Fprintf(&b, `
 # Export the mount point.
 # fsid=0 makes /mnt/linuxfs the NFS root so the client mounts path /.
-# List 127.0.0.1 explicitly: some mountd versions exclude loopback from
-# wildcard matches (* and 0.0.0.0/0). The QEMU hostfwd makes the host
-# NFS client appear as 127.0.0.1 inside the VM.
+# Write both 127.0.0.1 and 0.0.0.0/0 entries: some mountd versions
+# exclude loopback from wildcard matches. The QEMU hostfwd makes the
+# host NFS client appear as 127.0.0.1 inside the VM.
 EXPORT_PATH='%s'
-EXPORT_OPTS='rw,sync,no_subtree_check,no_root_squash,fsid=0%s'
-grep -qF "${EXPORT_PATH}" /etc/exports 2>/dev/null || \
-    printf "${EXPORT_PATH} 127.0.0.1(${EXPORT_OPTS})\n${EXPORT_PATH} 0.0.0.0/0(${EXPORT_OPTS})\n" \
-    >> /etc/exports
+EXPORT_OPTS='rw,sync,no_subtree_check,no_root_squash,insecure,fsid=0%s'
+# Always rewrite the exports file to ensure both entries are present.
+grep -v "^${EXPORT_PATH}" /etc/exports > /tmp/exports.tmp 2>/dev/null || true
+printf "${EXPORT_PATH} 127.0.0.1(${EXPORT_OPTS})\n${EXPORT_PATH} 0.0.0.0/0(${EXPORT_OPTS})\n" \
+    >> /tmp/exports.tmp
+cp /tmp/exports.tmp /etc/exports
 
 # Load nfsd kernel module explicitly (required on cloud kernels).
 modprobe nfsd 2>/dev/null || true
