@@ -171,6 +171,7 @@ cmd_vm() {
         console)  cmd_vm_console "$@" ;;
         shell)    cmd_vm_shell "$@" ;;
         snapshot) cmd_vm_snapshot "$@" ;;
+        snapshot-auto) cmd_vm_snapshot auto "$@" ;;
         export)   cmd_vm_export  "$@" ;;
         import)   cmd_vm_import  "$@" ;;
         fleet)    cmd_vm_fleet    "$@" ;;
@@ -198,8 +199,9 @@ Subcommands:
   console   Attach to the VM console (serial/VGA)
   shell     Open a shell inside the running VM via incus exec
   template  List and inspect VM creation templates
-  snapshot  Create, list, restore, and delete VM snapshots
-  export    Publish VM as a reusable Incus image
+  snapshot      Create, list, restore, and delete VM snapshots
+  snapshot-auto Manage automatic snapshot schedules (alias: vm snapshot auto)
+  export        Publish VM as a reusable Incus image
   import    Create a VM from a published image or backup
   fleet     Multi-VM orchestration (start-all, stop-all, backup-all)
   monitor   Show VM resource usage and stats
@@ -1993,6 +1995,10 @@ Examples:
 EOF
             ;;
 
+
+        nic)
+            cmd_vm_net_nic "$@"
+            ;;
         *) die "Unknown net subcommand: ${subcmd}. Run: imt vm net help" ;;
 
     esac
