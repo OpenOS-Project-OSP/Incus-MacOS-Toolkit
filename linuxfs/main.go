@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// linuxfs-mac — access Linux-native filesystems on macOS and Windows.
+// linuxfs — access Linux-native filesystems on macOS, Windows, and Linux.
 //
 // Unified from:
 //   - AlexSSD7/linsk  (Go core, QEMU VM, SMB/AFP/FTP backends)

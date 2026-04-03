@@ -68,8 +68,14 @@ func ensureImage(p Provider, arch Arch, dataDir string) (string, error) {
 	return imagePath, nil
 }
 
-// downloadFile downloads url to dest atomically, printing progress.
+// DownloadFile downloads url to dest atomically, printing progress.
 // If wantSHA256 is non-empty the download is verified against it.
+// Exported so cmd/update_images.go can reuse it.
+func DownloadFile(url, dest, wantSHA256 string) error {
+	return downloadFile(url, dest, wantSHA256)
+}
+
+// downloadFile is the internal implementation.
 func downloadFile(url, dest, wantSHA256 string) error {
 	tmp := dest + ".tmp"
 

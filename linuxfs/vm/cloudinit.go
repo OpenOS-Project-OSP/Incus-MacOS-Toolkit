@@ -17,18 +17,20 @@ import (
 	"strings"
 )
 
-const vmPassword = "linuxfs-vm"
+// cloudInitSeedVersion is incremented whenever the user-data template changes
+// in a way that requires existing cached seed ISOs to be regenerated.
+const cloudInitSeedVersion = 8
 
 // EnsureCloudInitSeed creates a cloud-init seed ISO in dir if it doesn't
 // already exist. The ISO is named after the provider to avoid collisions
 // when switching distros. Returns the path to the ISO.
 func EnsureCloudInitSeed(dir string, p Provider) (string, error) {
-	seedPath := filepath.Join(dir, fmt.Sprintf("cloud-init-seed-%s.iso", p.Name()))
+	seedPath := filepath.Join(dir, fmt.Sprintf("cloud-init-seed-%s-v%d.iso", p.Name(), cloudInitSeedVersion))
 	if _, err := os.Stat(seedPath); err == nil {
 		return seedPath, nil
 	}
 
-	seedDir := filepath.Join(dir, fmt.Sprintf("cloud-init-seed-%s", p.Name()))
+	seedDir := filepath.Join(dir, fmt.Sprintf("cloud-init-seed-%s-v%d", p.Name(), cloudInitSeedVersion))
 	if err := os.MkdirAll(seedDir, 0o700); err != nil {
 		return "", fmt.Errorf("create seed dir: %w", err)
 	}
@@ -65,10 +67,19 @@ func buildUserData(p Provider, sshPubKey string) string {
 		pkgLines.WriteString(fmt.Sprintf("  - %s\n", pkg))
 	}
 
-	// Build runcmd list.
 	var runcmdLines strings.Builder
 	for _, cmd := range p.CloudInitRuncmds() {
 		runcmdLines.WriteString(fmt.Sprintf("  - %s\n", cmd))
+	}
+
+	// Only include packages/runcmd sections when non-empty to avoid
+	// cloud-init schema warnings on empty lists.
+	var pkgSection, runcmdSection string
+	if pkgLines.Len() > 0 {
+		pkgSection = "packages:\n" + pkgLines.String()
+	}
+	if runcmdLines.Len() > 0 {
+		runcmdSection = "runcmd:\n" + runcmdLines.String()
 	}
 
 	return fmt.Sprintf(`#cloud-config
@@ -76,24 +87,20 @@ users:
   - name: %s
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: %s
-    lock_passwd: false
-    passwd: %s
+    lock_passwd: true
     ssh_authorized_keys:
       - %s
 
-ssh_pwauth: true
+ssh_pwauth: false
 disable_root: false
 
-packages:
 %s
-runcmd:
 %s`,
 		p.DefaultUser(),
 		p.DefaultShell(),
-		vmPassword,
 		sshPubKey,
-		pkgLines.String(),
-		runcmdLines.String(),
+		pkgSection,
+		runcmdSection,
 	)
 }
 

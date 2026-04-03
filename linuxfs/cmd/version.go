@@ -8,6 +8,6 @@ import "fmt"
 var Version = "0.1.0"
 
 func runVersion() {
-	fmt.Printf("linuxfs-mac %s\n", Version)
+	fmt.Printf("linuxfs %s\n", Version)
 	fmt.Println("Upstream projects: AlexSSD7/linsk, nohajc/anylinuxfs")
 }

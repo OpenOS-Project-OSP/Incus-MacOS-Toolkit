@@ -7,12 +7,14 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -37,19 +39,26 @@ type Config struct {
 	// 0 = use 10022.
 	SSHPort uint16
 
+	// ExtraHostFwds is a list of additional QEMU hostfwd rules in the form
+	// "tcp::HOST_PORT-:GUEST_PORT", appended to the -netdev user option.
+	// Used to forward share server ports (NFS, SMB, AFP, FTP) to the host.
+	ExtraHostFwds []string
+
 	// DataDir overrides the default cache directory for VM images.
 	DataDir string
 }
 
 // VM represents a running Linux microVM instance.
 type VM struct {
-	cfg      Config
-	provider Provider
-	arch     Arch
-	logger   *slog.Logger
-	cmd      *exec.Cmd
-	ctx      context.Context
-	cancel   context.CancelFunc
+	cfg         Config
+	provider    Provider
+	arch        Arch
+	logger      *slog.Logger
+	cmd         *exec.Cmd
+	ctx         context.Context
+	cancel      context.CancelFunc
+	qemuStderr  bytes.Buffer // captures QEMU stderr when Debug is false
+	overlayPath string       // ephemeral qcow2 overlay; deleted on Stop
 
 	// SSHPort is the resolved host port (set after Start).
 	SSHPort uint16
@@ -83,15 +92,33 @@ func (v *VM) Start() error {
 // Stop shuts down the VM.
 func (v *VM) Stop() error {
 	v.cancel()
+	var err error
 	if v.cmd != nil && v.cmd.Process != nil {
-		return v.cmd.Process.Kill()
+		err = v.cmd.Process.Kill()
 	}
-	return nil
+	if v.overlayPath != "" {
+		_ = os.Remove(v.overlayPath)
+	}
+	return err
 }
 
 // User returns the SSH username for the running VM's distro.
 func (v *VM) User() string {
 	return v.provider.DefaultUser()
+}
+
+// Pid returns the QEMU process PID, or 0 if the VM has not been started.
+func (v *VM) Pid() int {
+	if v.cmd != nil && v.cmd.Process != nil {
+		return v.cmd.Process.Pid
+	}
+	return 0
+}
+
+// KeyPath returns the path to the SSH private key used to connect to the VM,
+// or "" if the default SSH agent / key is used.
+func (v *VM) KeyPath() string {
+	return v.sshOpts().KeyPath
 }
 
 func (v *VM) startQEMU() error {
@@ -101,7 +128,7 @@ func (v *VM) startQEMU() error {
 		return fmt.Errorf("%s not found: install QEMU first", binary)
 	}
 
-	vmImage, err := ensureImage(v.provider, v.arch, v.cfg.DataDir)
+	baseImage, err := ensureImage(v.provider, v.arch, v.cfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("vm image: %w", err)
 	}
@@ -129,19 +156,48 @@ func (v *VM) startQEMU() error {
 	accel := accelFlag()
 	format := v.provider.ImageFormat()
 
+	// Create a throwaway overlay so the base image is never modified.
+	// Each VM start gets a fresh disk state; the overlay is deleted on Stop.
+	vmImage := baseImage + ".overlay.qcow2"
+	_ = os.Remove(vmImage) // remove any leftover from a previous run
+	if out, err := exec.Command("qemu-img", "create",
+		"-f", "qcow2",
+		"-b", baseImage,
+		"-F", format,
+		vmImage,
+	).CombinedOutput(); err != nil {
+		return fmt.Errorf("qemu-img create overlay: %w\n%s", err, out)
+	}
+	v.overlayPath = vmImage
+
+	serialDev := "null"
+	if v.cfg.Debug {
+		// chardev:serial0 writes to stderr so it doesn't interfere with
+		// the Go test runner capturing stdout.
+		serialDev = "file:/dev/stderr"
+	}
 	args := []string{
 		"-accel", accel,
 		"-m", fmt.Sprintf("%d", v.cfg.MemMiB),
 		"-nographic",
-		"-serial", "mon:stdio",
-		// VM root disk
-		"-drive", fmt.Sprintf("if=virtio,format=%s,file=%s", format, vmImage),
-		// cloud-init seed ISO
-		"-drive", fmt.Sprintf("if=virtio,format=raw,file=%s,readonly=on", seedISO),
-		// Target block device / image to mount
-		"-drive", fmt.Sprintf("if=virtio,format=raw,file=%s,readonly=%s",
+		"-serial", serialDev,
+		// Always disable the QEMU monitor: with -nographic the monitor
+		// defaults to stdio, and reading EOF from /dev/null causes QEMU
+		// to exit immediately.
+		"-monitor", "none",
+		// Boot explicitly from the first virtio disk (the VM root image).
+		"-boot", "order=c,strict=on",
+		// VM root disk — bootindex=1 ensures SeaBIOS boots this first.
+		"-drive", fmt.Sprintf("if=none,id=rootdisk,format=%s,file=%s", format, vmImage),
+		"-device", "virtio-blk-pci,drive=rootdisk,bootindex=1",
+		// cloud-init seed ISO — NoCloud datasource reads this on first boot.
+		"-drive", fmt.Sprintf("if=none,id=seeddisk,format=raw,file=%s,readonly=on", seedISO),
+		"-device", "virtio-blk-pci,drive=seeddisk",
+		// Target block device / image to expose inside the VM as /dev/vdc.
+		"-drive", fmt.Sprintf("if=none,id=targetdisk,format=raw,file=%s,readonly=%s",
 			v.cfg.DevicePath, boolToOnOff(v.cfg.ReadOnly)),
-		"-netdev", fmt.Sprintf("user,id=net0,hostfwd=tcp::%d-:22", sshPort),
+		"-device", "virtio-blk-pci,drive=targetdisk",
+		"-netdev", v.buildNetdev(sshPort),
 		"-device", "virtio-net-pci,netdev=net0",
 	}
 
@@ -156,15 +212,35 @@ func (v *VM) startQEMU() error {
 	)
 
 	v.cmd = exec.CommandContext(v.ctx, binary, args...)
+	// Always redirect stdin from /dev/null so QEMU's -serial mon:stdio
+	// does not block waiting for input when running non-interactively.
+	if f, err := os.Open(os.DevNull); err == nil {
+		v.cmd.Stdin = f
+	}
 	if v.cfg.Debug {
 		v.cmd.Stdout = os.Stdout
 		v.cmd.Stderr = os.Stderr
+	} else {
+		// Capture both stdout and stderr: QEMU writes errors to stdout
+		// when -nographic is active, and to stderr otherwise.
+		v.qemuStderr.Reset()
+		v.cmd.Stdout = &v.qemuStderr
+		v.cmd.Stderr = &v.qemuStderr
 	}
 	if err := v.cmd.Start(); err != nil {
 		return fmt.Errorf("qemu start: %w", err)
 	}
 
-	return v.waitForSSH(120 * time.Second)
+	// Reap the process in the background so ProcessState is populated
+	// promptly when QEMU exits, allowing waitForSSH to detect early exits.
+	go func() { _ = v.cmd.Wait() }()
+
+	if err := v.waitForSSH(300 * time.Second); err != nil {
+		return err
+	}
+	// Allow up to 10 minutes for cloud-init runcmd to complete.
+	// apt-get update + package install on a cold CI runner can take 3-4 min.
+	return v.waitForCloudInit(600 * time.Second)
 }
 
 // waitForSSH polls the SSH port until it accepts connections or timeout expires.
@@ -174,19 +250,96 @@ func (v *VM) waitForSSH(timeout time.Duration) error {
 
 	v.logger.Info("Waiting for VM SSH", "addr", addr, "timeout", timeout)
 
+	// Give QEMU a moment to fail fast (e.g. missing file, bad args)
+	// and for the Wait goroutine to populate ProcessState and flush output.
+	time.Sleep(2 * time.Second)
+	if v.cmd.ProcessState != nil && v.cmd.ProcessState.Exited() {
+		return fmt.Errorf("QEMU process exited immediately (exit code %d)\nOutput:\n%s",
+			v.cmd.ProcessState.ExitCode(), v.qemuStderr.String())
+	}
+
 	for time.Now().Before(deadline) {
 		if v.cmd.ProcessState != nil && v.cmd.ProcessState.Exited() {
-			return fmt.Errorf("QEMU process exited unexpectedly")
+			return fmt.Errorf("QEMU process exited unexpectedly (exit code %d)\n%s",
+				v.cmd.ProcessState.ExitCode(), v.qemuStderr.String())
 		}
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err == nil {
 			conn.Close()
-			v.logger.Info("VM SSH ready", "addr", addr)
-			return nil
+			// TCP port is open; wait for the SSH daemon to complete its
+			// banner exchange before returning.
+			if sshErr := v.waitForSSHBanner(addr, deadline); sshErr == nil {
+				v.logger.Info("VM SSH ready", "addr", addr)
+				return nil
+			}
+			// Banner not ready yet — keep polling.
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return fmt.Errorf("timed out waiting for VM SSH on %s after %s", addr, timeout)
+	return fmt.Errorf("timed out waiting for VM SSH on %s after %s\nQEMU stderr: %s",
+		addr, timeout, v.qemuStderr.String())
+}
+
+// waitForCloudInit waits for cloud-init to fully complete, including runcmd.
+// It polls for /var/lib/cloud/instance/user-data.txt.i (written by cloud-init
+// after runcmd finishes) or falls back to a custom sentinel file written by
+// the last runcmd entry.
+func (v *VM) waitForCloudInit(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	v.logger.Info("Waiting for cloud-init", "timeout", timeout)
+	for time.Now().Before(deadline) {
+		// Poll for the sentinel file written by the last runcmd entry.
+		// The sentinel lives on /run (tmpfs), so it cannot be a leftover
+		// from a previous boot. The qcow2 overlay guarantees a clean disk
+		// state on every VM start, so no additional package check is needed.
+		out, err := v.Run(
+			"test -f /run/cloud-init-custom-done && echo RUNCMD_COMPLETE || echo RUNCMD_PENDING",
+		)
+		if err == nil && strings.Contains(out, "RUNCMD_COMPLETE") {
+			v.logger.Info("cloud-init ready")
+			return nil
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("timed out waiting for cloud-init after %s", timeout)
+}
+
+// waitForSSHBanner connects to addr and reads the SSH protocol banner line.
+// Returns nil only when the server sends a valid "SSH-" banner before deadline.
+func (v *VM) waitForSSHBanner(addr string, deadline time.Time) error {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return fmt.Errorf("deadline exceeded")
+	}
+	timeout := remaining
+	if timeout > 5*time.Second {
+		timeout = 5 * time.Second
+	}
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return err
+	}
+	if n < 4 || string(buf[:4]) != "SSH-" {
+		return fmt.Errorf("unexpected banner: %q", buf[:n])
+	}
+	return nil
+}
+
+// buildNetdev constructs the QEMU -netdev user argument string, including
+// the SSH port forward and any extra host forwards from Config.ExtraHostFwds.
+func (v *VM) buildNetdev(sshPort uint16) string {
+	s := fmt.Sprintf("user,id=net0,hostfwd=tcp::%d-:22", sshPort)
+	for _, fwd := range v.cfg.ExtraHostFwds {
+		s += ",hostfwd=" + fwd
+	}
+	return s
 }
 
 func boolToOnOff(b bool) string {

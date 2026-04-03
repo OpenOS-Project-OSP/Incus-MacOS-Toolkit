@@ -241,6 +241,18 @@ jobs:
             echo "Kernel module did not produce .ko (may need BTRFS/FUSE kernel config)"
           fi
 
+  btrfs-dwarfs-scripts:
+    name: btrfs-dwarfs / shellcheck scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          wget -qO- https://github.com/koalaman/shellcheck/releases/download/stable/shellcheck-stable.linux.x86_64.tar.xz \
+            | tar -xJ --strip-components=1 -C /usr/local/bin shellcheck-stable/shellcheck
+      - name: shellcheck
+        run: shellcheck btrfs-dwarfs/scripts/vm-install.sh
+
   btrfs-dwarfs-static-analysis:
     name: btrfs-dwarfs / cppcheck
     runs-on: ubuntu-24.04
@@ -264,6 +276,59 @@ jobs:
             -I include/uapi \
             userspace/daemon/ userspace/cli/
 
+  # ── linuxfs: VM integration test (boot Alpine, mount ext4, NFS) ──────────
+
+  linuxfs-integration:
+    name: linuxfs / integration test (Alpine + NFS)
+    runs-on: ubuntu-latest
+    # Needs KVM access; GitHub-hosted ubuntu-latest runners have /dev/kvm.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache-dependency-path: linuxfs/go.sum
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils \
+            nfs-common nfs-kernel-server \
+            e2fsprogs \
+            cloud-image-utils
+      - name: Enable KVM access for runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo usermod -aG kvm "$USER" || true
+      - name: Verify KVM and QEMU
+        run: |
+          qemu-system-x86_64 --version
+          test -e /dev/kvm && echo "KVM: available" || echo "KVM: not available"
+          # Purge the entire linuxfs cache so stale seed ISOs and base images
+          # from previous runs never bleed into this job.
+          sudo rm -rf /home/runner/.cache/linuxfs/ || true
+      - name: Stop host NFS services (prevent interference with VM forwarded ports)
+        run: |
+          # The host's rpcbind/nfs-kernel-server would intercept NFS traffic
+          # meant for the VM's forwarded ports. Stop them before the test.
+          sudo systemctl stop nfs-kernel-server nfs-mountd nfsd rpcbind 2>/dev/null || true
+          sudo systemctl disable nfs-kernel-server rpcbind 2>/dev/null || true
+          # Unload nfsd kernel module so the host kernel doesn't handle NFS frames
+          sudo modprobe -r nfsd 2>/dev/null || true
+          # Confirm port 2049 is free on the host
+          ss -tlnp | grep ':2049' && echo "WARNING: port 2049 still in use on host" || echo "port 2049 free on host"
+
+      - name: Run integration test (as root for NFS mount)
+        working-directory: linuxfs
+        # sudo -E preserves the Go environment set up by setup-go.
+        run: |
+          sudo -E "$(which go)" test \
+            -v -tags integration -timeout 25m \
+            ./integration/
+
   # ── Summary gate: all required jobs must pass ─────────────────────────────
 
   ci-pass:
@@ -272,6 +337,7 @@ jobs:
     needs:
       - linuxfs-build
       - linuxfs-cross
+      - linuxfs-integration
       - macos-vm-lint
       - compat-lint
       - compat-mlsblk
@@ -280,6 +346,7 @@ jobs:
       - btrfs-dwarfs-unit
       - btrfs-dwarfs-clang
       - btrfs-dwarfs-kernel
+      - btrfs-dwarfs-scripts
       - btrfs-dwarfs-static-analysis
     if: always()
     steps:

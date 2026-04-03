@@ -65,28 +65,55 @@ static void bdfs_handle_event(struct bdfs_daemon *d,
 	case BDFS_EVT_SNAPSHOT_EXPORTED: {
 		/*
 		 * Kernel has registered an export intent.  Parse the message
-		 * to extract subvol_id, image path, and compression.
+		 * to extract subvol_id, image name, compression, flags, and
+		 * the optional parent snapshot path for incremental sends.
 		 *
 		 * Message format:
-		 *   "export subvol=<id> image=<name> compression=<n>"
+		 *   "export subvol=<id> image=<name> compression=<n>
+		 *    flags=0x<n> parent=<path>"
+		 *
+		 * parent is an empty string when BDFS_EXPORT_INCREMENTAL is
+		 * not set; sscanf leaves parent_snap unchanged (zeroed) in
+		 * that case because the format string won't match past flags.
 		 */
 		uint64_t subvol_id = 0;
 		char image_name[BDFS_NAME_MAX + 1] = {0};
 		uint32_t compression = BDFS_COMPRESS_ZSTD;
+		uint32_t flags = 0;
+		char parent_snap[BDFS_PATH_MAX] = {0};
+		const char *parent_ptr;
 
 		sscanf(evt->message,
-		       "export subvol=%" SCNu64 " image=%255s compression=%u",
-		       &subvol_id, image_name, &compression);
+		       "export subvol=%" SCNu64 " image=%255s compression=%u"
+		       " flags=0x%x",
+		       &subvol_id, image_name, &compression, &flags);
+
+		/* parent= is last and may contain path separators, so parse
+		 * it with strstr rather than sscanf's %s (which stops at ' ').*/
+		parent_ptr = strstr(evt->message, " parent=");
+		if (parent_ptr && (flags & BDFS_EXPORT_INCREMENTAL)) {
+			parent_ptr += 8; /* skip " parent=" */
+			strncpy(parent_snap, parent_ptr,
+				sizeof(parent_snap) - 1);
+		}
 
 		job = bdfs_job_alloc(BDFS_JOB_EXPORT_TO_DWARFS);
 		if (!job) break;
 
 		memcpy(job->partition_uuid, evt->partition_uuid, 16);
 		job->object_id = evt->object_id;
-		job->export_to_dwarfs.subvol_id = subvol_id;
+		job->export_to_dwarfs.subvol_id   = subvol_id;
 		job->export_to_dwarfs.compression = compression;
+		job->export_to_dwarfs.flags       = flags;
 		strncpy(job->export_to_dwarfs.image_name, image_name,
 			sizeof(job->export_to_dwarfs.image_name) - 1);
+		strncpy(job->export_to_dwarfs.parent_snap_path, parent_snap,
+			sizeof(job->export_to_dwarfs.parent_snap_path) - 1);
+
+		if (flags & BDFS_EXPORT_INCREMENTAL)
+			syslog(LOG_INFO,
+			       "bdfs: incremental export: parent=%s",
+			       parent_snap[0] ? parent_snap : "(none)");
 		break;
 	}
 

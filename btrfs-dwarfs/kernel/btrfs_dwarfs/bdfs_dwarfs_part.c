@@ -160,10 +160,14 @@ int bdfs_dwarfs_export(void __user *uarg,
 	list_add_tail(&img->list, &priv->images);
 	mutex_unlock(&priv->images_lock);
 
-	/* Emit event so the daemon picks up the export request */
+	/* Emit event so the daemon picks up the export request.
+	 * Include flags and parent_snap_path so the daemon can perform
+	 * incremental sends when BDFS_EXPORT_INCREMENTAL is set. */
 	snprintf(event_msg, sizeof(event_msg),
-		 "export subvol=%llu image=%s compression=%u",
-		 arg.btrfs_subvol_id, arg.image_name, arg.compression);
+		 "export subvol=%llu image=%s compression=%u flags=0x%x parent=%s",
+		 arg.btrfs_subvol_id, arg.image_name, arg.compression,
+		 arg.flags,
+		 (arg.flags & BDFS_EXPORT_INCREMENTAL) ? arg.parent_snap_path : "");
 	bdfs_emit_event(BDFS_EVT_SNAPSHOT_EXPORTED, arg.partition_uuid,
 			img->desc.image_id, event_msg);
 

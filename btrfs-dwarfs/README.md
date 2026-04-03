@@ -310,9 +310,7 @@ man doc/bdfs_daemon.8
 
 ## Known Limitations
 
-- **Blend layer lookup is a skeleton.** The `bdfs_blend` VFS type is registered and the blend mount/umount ioctls are wired, but full inode routing across the BTRFS/DwarFS boundary in `bdfs_blend_lookup` requires kernel-version-specific FUSE internal API work and is not yet complete.
-- **Incremental export not wired.** The `--incremental` flag is accepted but `btrfs send -p <parent>` is not yet passed through in the daemon job handler.
-- **Read-only import is stubbed.** The `--readonly` flag on `bdfs import` constructs the `btrfs property set ro true` call but does not execute it yet.
+- **Blend layer whiteouts not implemented.** The `bdfs_blend` VFS type handles reads, writes, copy-up, promote, and demote. Whiteout entries (deletion of lower-layer files from the upper layer) are not yet implemented — deleting a file that exists only in a DwarFS lower layer will return EPERM.
 
 ---
 

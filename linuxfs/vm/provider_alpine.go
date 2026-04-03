@@ -4,7 +4,7 @@ package vm
 
 import "fmt"
 
-const alpineVersion = "3.21.3"
+const alpineVersion = "3.21.6"
 
 // AlpineProvider is the default microVM distro.
 // Alpine images are ~50 MiB, boot in under 5 seconds, and support cloud-init
@@ -14,9 +14,11 @@ type AlpineProvider struct{}
 func (AlpineProvider) Name() string { return "alpine" }
 
 func (AlpineProvider) ImageURL(arch Arch) string {
+	// Use the nocloud variant: designed for local QEMU use with a seed ISO.
+	// x86_64 uses BIOS; aarch64 uses UEFI.
 	return fmt.Sprintf(
-		"https://dl-cdn.alpinelinux.org/alpine/v%s/releases/cloud/alpine-virt-%s.%s.qcow2",
-		alpineVersion[:4], alpineVersion, arch.AlpineString(),
+		"https://dl-cdn.alpinelinux.org/alpine/v%s/releases/cloud/nocloud_alpine-%s-%s-%s-cloudinit-r0.qcow2",
+		alpineVersion[:4], alpineVersion, arch.AlpineString(), arch.AlpineFirmware(),
 	)
 }
 

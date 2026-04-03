@@ -247,6 +247,11 @@ int bdfs_job_import_from_dwarfs(struct bdfs_daemon *d, struct bdfs_job *job)
 	 * Step 3: Optionally make the subvolume read-only.
 	 * A read-only subvolume can be used as a base for CoW snapshots
 	 * without risk of accidental modification.
+	 *
+	 * Failure here is fatal when BDFS_IMPORT_READONLY was requested:
+	 * the caller explicitly asked for a read-only subvolume and must
+	 * not silently receive a writable one.  The subvolume is deleted
+	 * so the caller can retry with corrected permissions or tooling.
 	 */
 	if (j->import_from_dwarfs.flags & BDFS_IMPORT_READONLY) {
 		const char *argv[] = {
@@ -255,17 +260,15 @@ int bdfs_job_import_from_dwarfs(struct bdfs_daemon *d, struct bdfs_job *job)
 		};
 		ret = bdfs_exec_wait(argv);
 		if (ret) {
-			syslog(LOG_WARNING,
+			syslog(LOG_ERR,
 			       "bdfs: import: failed to set subvol ro on %s: %d"
-			       " (subvol created but not read-only)",
+			       " — deleting subvol to avoid silent writable import",
 			       subvol_path, ret);
-			/* Non-fatal: the data was imported successfully;
-			 * the caller can set ro manually via btrfs-progs. */
-			ret = 0;
-		} else {
-			syslog(LOG_INFO, "bdfs: import: subvol %s set read-only",
-			       subvol_path);
+			bdfs_exec_btrfs_subvol_delete(d, subvol_path);
+			return ret;
 		}
+		syslog(LOG_INFO, "bdfs: import: subvol %s set read-only",
+		       subvol_path);
 	}
 
 	syslog(LOG_INFO, "bdfs: import complete: %s → subvol %s",

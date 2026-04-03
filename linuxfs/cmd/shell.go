@@ -19,7 +19,7 @@ func runShell(args []string) {
 		os.Exit(1)
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: linuxfs-mac shell <device>")
+		fmt.Fprintln(os.Stderr, "Usage: linuxfs shell <device>")
 		os.Exit(1)
 	}
 

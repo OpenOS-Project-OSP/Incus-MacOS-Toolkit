@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# linuxfs-mac — top-level Makefile
 
-BINARY   := linuxfs-mac
-VERSION  := 0.1.0
-LDFLAGS  := -ldflags "-X github.com/linuxfs-mac/linuxfs-mac/cmd.Version=$(VERSION)"
+BINARY  := linuxfs
+VERSION := 0.1.0
+LDFLAGS := -ldflags "-X github.com/linuxfs-mac/linuxfs-mac/cmd.Version=$(VERSION)"
 
 .PHONY: all build test lint clean install help
 
 all: build
 
 help:
-	@echo "linuxfs-mac targets:"
+	@echo "linuxfs targets:"
 	@echo "  make build    Build the binary"
 	@echo "  make test     Run tests"
 	@echo "  make lint     Run golangci-lint"

@@ -74,6 +74,17 @@ func (a Arch) AlpineString() string {
 	}
 }
 
+// AlpineFirmware returns the firmware type used in Alpine cloud image filenames.
+// x86_64 images use BIOS; aarch64 and others use UEFI.
+func (a Arch) AlpineFirmware() string {
+	switch a {
+	case ArchAMD64:
+		return "bios"
+	default:
+		return "uefi"
+	}
+}
+
 // DebianString returns the Debian cloud image architecture identifier.
 func (a Arch) DebianString() string {
 	switch a {

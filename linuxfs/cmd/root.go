@@ -28,7 +28,7 @@ func Execute() {
 	flag.StringVar(&flagDataDir, "data-dir", "",
 		"Directory for VM image and state (default: OS cache dir)")
 	flag.StringVar(&flagBackend, "backend", "",
-		"File share backend: smb, afp, nfs, ftp (auto-detected by OS if empty)")
+		"File share backend: sshfs (default on Linux), afp (macOS), smb (Windows), nfs, ftp")
 	flag.StringVar(&flagListenIP, "listen-ip", "127.0.0.1",
 		"IP address the share server listens on")
 	flag.StringVar(&flagDistro, "distro", "alpine",
@@ -49,8 +49,8 @@ func Execute() {
 	}
 
 	// Parse global flags that appear before the subcommand.
-	// e.g.: linuxfs-mac --vm-mem 2048 mount /dev/disk2s1
-	// Also handle subcommand-first style: linuxfs-mac mount --vm-mem 2048 /dev/disk2s1
+	// e.g.: linuxfs --vm-mem 2048 mount /dev/disk2s1
+	// Also handle subcommand-first style: linuxfs mount --vm-mem 2048 /dev/disk2s1
 	// We do a best-effort parse: stop at the first non-flag token.
 	_ = flag.CommandLine.Parse(os.Args[1:]) //nolint:errcheck
 
@@ -76,6 +76,10 @@ func Execute() {
 		runShell(rest)
 	case "bdfs":
 		runBdfs(rest)
+	case "clean":
+		runClean(rest)
+	case "update-images":
+		runUpdateImages(rest)
 	case "version":
 		runVersion()
 	case "-h", "--help", "help":
@@ -88,10 +92,10 @@ func Execute() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `linuxfs-mac — access Linux-native filesystems on macOS and Windows.
+	fmt.Fprintf(os.Stderr, `linuxfs — access Linux-native filesystems on macOS, Windows, and Linux.
 
 Usage:
-  linuxfs-mac [global flags] <subcommand> [flags] [args]
+  linuxfs [global flags] <subcommand> [flags] [args]
 
 Subcommands:
   mount     Mount a Linux filesystem and expose it as a network share
@@ -99,7 +103,9 @@ Subcommands:
   list      List currently mounted filesystems
   shell     Open a shell inside the VM for a device
   bdfs      Proxy btrfs-dwarfs-framework CLI commands into the VM
-  version   Print version information
+  clean         Remove stale entries from the mount state file
+  update-images Check for and download newer VM images
+  version       Print version information
 
 Global flags:
 `)
