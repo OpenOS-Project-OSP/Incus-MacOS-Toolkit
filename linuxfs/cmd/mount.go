@@ -112,6 +112,7 @@ Flags:
 		Debug:         flagDebug,
 		DataDir:       flagDataDir,
 		ExtraHostFwds: mount.HostFwds(backend),
+		SSHPort:       uint16(flagSSHPort), //nolint:gosec
 	}
 
 	v, err := vm.New(context.Background(), vmCfg, logger)
@@ -302,8 +303,15 @@ Flags:
 
 	// Unmount the host share.
 	if rec != nil && rec.Backend == string(mount.BackendSSHFS) {
-		fmt.Printf("Unmounting sshfs %s ...\n", target)
-		if err := mount.UnmountSSHFS(target); err != nil {
+		// Use the recorded mountpoint, not the user-supplied target which
+		// may be a device path (e.g. /dev/disk2s1) rather than the sshfs
+		// mountpoint (e.g. /tmp/linuxfs-dev-disk2s1).
+		sshfsMnt := target
+		if rec.MountPoint != "" {
+			sshfsMnt = rec.MountPoint
+		}
+		fmt.Printf("Unmounting sshfs %s ...\n", sshfsMnt)
+		if err := mount.UnmountSSHFS(sshfsMnt); err != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
 		}
 	} else {

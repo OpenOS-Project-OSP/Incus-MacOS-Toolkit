@@ -136,8 +136,10 @@ func autoMountDarwin(shareURL, mountPoint string) error {
 		cmd = exec.Command("mount_afp", shareURL, mountPoint)
 	case BackendNFS:
 		// mount_nfs expects host:/path syntax, not a URL.
+		// Force NFSv4 so the client connects directly to port 2049 without
+		// consulting rpcbind (port 111 is not forwarded by QEMU hostfwd).
 		host, path := splitNFSURL(shareURL)
-		cmd = exec.Command("mount_nfs", "-o", "resvport,rw", host+":"+path, mountPoint)
+		cmd = exec.Command("mount_nfs", "-o", "resvport,rw,vers=4", host+":"+path, mountPoint)
 	case BackendSMB:
 		cmd = exec.Command("mount_smbfs", shareURL, mountPoint)
 	default:
@@ -161,8 +163,12 @@ func autoMountLinux(shareURL, mountPoint string) error {
 	var cmd *exec.Cmd
 	switch backendFromURL(shareURL) {
 	case BackendNFS:
+		// Force NFSv4 so the client connects directly to port 2049 without
+		// consulting rpcbind (port 111 is not forwarded by QEMU hostfwd).
 		host, path := splitNFSURL(shareURL)
-		cmd = exec.Command("mount", "-t", "nfs", host+":"+path, mountPoint)
+		cmd = exec.Command("mount", "-t", "nfs",
+			"-o", "nfsvers=4,port=2049,nolock",
+			host+":"+path, mountPoint)
 	case BackendSMB:
 		cmd = exec.Command("mount", "-t", "cifs", shareURL, mountPoint,
 			"-o", "guest")

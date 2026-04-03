@@ -284,9 +284,11 @@ elif [ -f /etc/conf.d/nfs ]; then
         echo 'MOUNTD_PORT=20048' >> /etc/conf.d/nfs
 fi
 `)
+	// listenIP restricts which client IP the NFS export allows.
+	// Empty or 0.0.0.0 means allow all (0.0.0.0/0 CIDR).
 	listenIP := opts.ListenIP
 	if listenIP == "" || listenIP == "0.0.0.0" {
-		listenIP = "*"
+		listenIP = "0.0.0.0/0"
 	}
 	roFlag := ""
 	if opts.ReadOnly {
@@ -295,18 +297,16 @@ fi
 	fmt.Fprintf(&b, `
 # Export the mount point.
 # fsid=0 makes /mnt/linuxfs the NFS root so the client mounts path /.
-# Write both 127.0.0.1 and 0.0.0.0/0 entries: some mountd versions
-# exclude loopback from wildcard matches. The QEMU hostfwd makes the
-# host NFS client appear as 127.0.0.1 inside the VM.
+# Always include 127.0.0.1 and 10.0.2.2 (QEMU gateway) because the
+# source IP seen by mountd for QEMU hostfwd connections is unpredictable.
+# Also export to the configured listen IP (default: 0.0.0.0/0).
 EXPORT_PATH='%s'
 EXPORT_OPTS='rw,sync,no_subtree_check,no_root_squash,insecure,fsid=0%s'
-# Always rewrite the exports file to ensure all client IPs are covered.
-# Include 127.0.0.1, 10.0.2.2 (QEMU gateway), and 0.0.0.0/0 because
-# the source IP seen by mountd depends on QEMU's network implementation.
+LISTEN_IP='%s'
 grep -v "^${EXPORT_PATH}" /etc/exports > /tmp/exports.tmp 2>/dev/null || true
 printf "${EXPORT_PATH} 127.0.0.1(${EXPORT_OPTS})\n" >> /tmp/exports.tmp
 printf "${EXPORT_PATH} 10.0.2.2(${EXPORT_OPTS})\n" >> /tmp/exports.tmp
-printf "${EXPORT_PATH} 0.0.0.0/0(${EXPORT_OPTS})\n" >> /tmp/exports.tmp
+printf "${EXPORT_PATH} ${LISTEN_IP}(${EXPORT_OPTS})\n" >> /tmp/exports.tmp
 cp /tmp/exports.tmp /etc/exports
 
 # Allow all NFS-related RPC services through TCP wrappers (if present).
@@ -338,7 +338,7 @@ exportfs -ra
 sleep 1
 # Verify both NFS data port and mountd are listening.
 ss -tlnp 2>/dev/null | grep -E ':2049|:20048' || true
-`, vmMountPoint, roFlag)
+`, vmMountPoint, roFlag, listenIP)
 	return b.String()
 }
 
