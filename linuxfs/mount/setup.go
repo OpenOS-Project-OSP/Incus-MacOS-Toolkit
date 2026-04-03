@@ -248,11 +248,20 @@ if ! command -v exportfs >/dev/null 2>&1; then
     fi
 fi
 
-# Pin rpcbind to port 111 and mountd to port 20048 so QEMU hostfwd rules
-# match deterministically. Without pinning, mountd picks a random port on
-# each start and the forwarded port 20048 would be unreachable.
-if [ -f /etc/nfs.conf ]; then
-    # nfs-utils >= 2.x (Debian/Ubuntu/Fedora)
+# Pin mountd to port 20048 so QEMU hostfwd rules match deterministically.
+# Without pinning, mountd picks a random port on each start.
+# Each distro uses a different mechanism:
+if [ -f /etc/default/nfs-kernel-server ]; then
+    # Debian/Ubuntu: set RPCMOUNTDOPTS in /etc/default/nfs-kernel-server
+    if ! grep -q 'RPCMOUNTDOPTS.*-p' /etc/default/nfs-kernel-server 2>/dev/null; then
+        sed -i 's|^RPCMOUNTDOPTS=.*|RPCMOUNTDOPTS="--manage-gids -p 20048"|' \
+            /etc/default/nfs-kernel-server
+        # If the line didn't exist, append it.
+        grep -q 'RPCMOUNTDOPTS' /etc/default/nfs-kernel-server || \
+            echo 'RPCMOUNTDOPTS="--manage-gids -p 20048"' >> /etc/default/nfs-kernel-server
+    fi
+elif [ -f /etc/nfs.conf ]; then
+    # Fedora/RHEL: use nfs.conf [mountd] section
     grep -q '^\[mountd\]' /etc/nfs.conf 2>/dev/null || cat >> /etc/nfs.conf <<'NFSEOF'
 [mountd]
 port = 20048
