@@ -41,8 +41,13 @@ const (
 	// Use a non-default port to avoid colliding with other tests.
 	testSSHPort = 10122
 
-	// testNFSPort is the host-side NFS port forwarded from the VM.
+	// testNFSPort is the host-side NFS data port forwarded from the VM.
+	// Use a non-standard port to avoid colliding with the host's own NFS.
 	testNFSPort = 12049
+
+	// testMountdPort is the host-side mountd port forwarded from the VM.
+	// Use a non-standard port to avoid colliding with the host's own mountd.
+	testMountdPort = 12048
 
 	// testSentinel is written inside the ext4 image and verified via NFS.
 	testSentinel = "linuxfs-integration-ok\n"
@@ -90,14 +95,15 @@ func TestVMBootMountNFS(t *testing.T) {
 	t.Log("Booting Alpine VM")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	// Forward NFS data port and mountd only.
+	// Forward NFS data port and mountd to non-standard host ports to avoid
+	// colliding with the host's own NFS/mountd services.
 	// Port 111 (rpcbind) is skipped: it's a privileged port already bound
 	// by the host's rpcbind daemon, causing QEMU hostfwd to fail.
 	// The NFS v3 mount uses explicit port= and mountport= options so
 	// rpcbind is not consulted.
 	remapped := []string{
 		fmt.Sprintf("tcp::%d-:2049", testNFSPort),
-		"tcp::20048-:20048",
+		fmt.Sprintf("tcp::%d-:20048", testMountdPort),
 	}
 
 	v, err := vm.New(ctx, vm.Config{
@@ -151,7 +157,7 @@ func TestVMBootMountNFS(t *testing.T) {
 	// NFS v3 over TCP; fsid=0 means the export root is /mnt/linuxfs inside VM.
 	mountArgs := []string{
 		"-t", "nfs",
-		"-o", fmt.Sprintf("port=%d,mountport=20048,nfsvers=3,tcp,nolock,soft,timeo=30", testNFSPort),
+		"-o", fmt.Sprintf("port=%d,mountport=%d,nfsvers=3,tcp,nolock,soft,timeo=30", testNFSPort, testMountdPort),
 		"127.0.0.1:/", nfsMnt,
 	}
 	if out, err := exec.CommandContext(ctx, "mount", mountArgs...).CombinedOutput(); err != nil {
