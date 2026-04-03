@@ -76,11 +76,15 @@ func (v *VM) RunScript(script string) (string, error) {
 
 // WaitForPort polls host:port inside the VM (via SSH) until it accepts
 // connections or the timeout expires. Used to wait for share servers.
+// Uses ss (iproute2) which is present on all supported distros; falls back
+// to nc if ss is unavailable (e.g. Alpine without iproute2).
 func (v *VM) WaitForPort(port uint16, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	// ss -tlnp checks for a TCP listener on the given port without needing
+	// to make a connection. nc -z is the fallback for Alpine/minimal images.
 	check := fmt.Sprintf(
-		"for i in $(seq 1 30); do nc -z 127.0.0.1 %d 2>/dev/null && exit 0; sleep 1; done; exit 1",
-		port,
+		"ss -tlnp 2>/dev/null | grep -q ':%d ' || nc -z 127.0.0.1 %d 2>/dev/null",
+		port, port,
 	)
 	for time.Now().Before(deadline) {
 		if _, err := v.Run(check); err == nil {
