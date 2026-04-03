@@ -40,11 +40,12 @@ imt $VERSION — Incus macOS Toolkit
 Usage: imt <command> [options]
 
 Commands:
-  image     Manage macOS disk images (fetch, build)
-  vm        Manage macOS VMs in Incus (create, start, stop, backup, restore, ...)
-  doctor    Check prerequisites
-  config    Show or initialise configuration
-  version   Print version
+  image       Manage macOS disk images (fetch, build)
+  vm          Manage macOS VMs in Incus (create, start, stop, backup, restore, ...)
+  cloud-sync  Sync VM backups to cloud storage via rclone
+  doctor      Check prerequisites
+  config      Show or initialise configuration
+  version     Print version
 
 Run 'imt <command> help' for command-specific usage.
 EOF
@@ -397,15 +398,22 @@ cmd_vm_snapshot() {
         list|ls) _cmd_vm_snapshot_list   "$@" ;;
         restore) _cmd_vm_snapshot_restore "$@" ;;
         delete|rm|remove) _cmd_vm_snapshot_delete "$@" ;;
+        auto)    _cmd_vm_snapshot_auto   "$@" ;;
         help|--help|-h)
             cat <<EOF
 Usage: imt vm snapshot <subcommand> [options]
 
 Subcommands:
-  create  [NAME] [--name VM]   Take a snapshot (default name: snap-<timestamp>)
-  list           [--name VM]   List all snapshots
-  restore NAME   [--name VM]   Restore to a snapshot
-  delete  NAME   [--name VM]   Delete a snapshot
+  create  [NAME] [--name VM]                    Take a snapshot
+  list           [--name VM]                    List all snapshots
+  restore NAME   [--name VM]                    Restore to a snapshot
+  delete  NAME   [--name VM]                    Delete a snapshot
+  auto    <set|show|disable> [--name VM]        Manage auto-snapshot schedule
+
+Auto subcommands:
+  auto set SCHEDULE [--expiry DURATION] [--pattern PATTERN]
+  auto show
+  auto disable
 
 Examples:
   imt vm snapshot create --name macos-sonoma
@@ -413,11 +421,90 @@ Examples:
   imt vm snapshot list --name macos-sonoma
   imt vm snapshot restore before-update --name macos-sonoma
   imt vm snapshot delete before-update --name macos-sonoma
+  imt vm snapshot auto set "@daily" --expiry 7d --name macos-sonoma
+  imt vm snapshot auto show --name macos-sonoma
+  imt vm snapshot auto disable --name macos-sonoma
 EOF
             ;;
         # Legacy: bare 'imt vm snapshot' with no subcommand → create
         *)
             _cmd_vm_snapshot_create "${subcmd}" "$@" ;;
+    esac
+}
+
+_cmd_vm_snapshot_auto() {
+    local subcmd="${1:-help}"
+    shift || true
+
+    case "${subcmd}" in
+        set)
+            local schedule="${1:?Usage: imt vm snapshot auto set <schedule> [--expiry DURATION] [--pattern PATTERN] [--name VM]}"
+            shift
+            local expiry="" pattern="snap-%d" version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --expiry)  expiry="$2";  shift 2 ;;
+                    --pattern) pattern="$2"; shift 2 ;;
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            info "Setting snapshot schedule for '${vm_name}': ${schedule}"
+            incus config set "${vm_name}" snapshots.schedule "${schedule}"
+            incus config set "${vm_name}" snapshots.pattern  "${pattern}"
+            incus config set "${vm_name}" snapshots.schedule.stopped false
+            if [[ -n "${expiry}" ]]; then
+                info "Setting snapshot expiry: ${expiry}"
+                incus config set "${vm_name}" snapshots.expiry "${expiry}"
+            fi
+            ok "Auto-snapshot configured for '${vm_name}'"
+            info "  Schedule : ${schedule}"
+            info "  Pattern  : ${pattern}"
+            [[ -n "${expiry}" ]] && info "  Expiry   : ${expiry}"
+            ;;
+        show)
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            local schedule expiry pattern
+            schedule=$(incus config get "${vm_name}" snapshots.schedule 2>/dev/null || echo "(not set)")
+            expiry=$(incus config get   "${vm_name}" snapshots.expiry   2>/dev/null || echo "(not set)")
+            pattern=$(incus config get  "${vm_name}" snapshots.pattern  2>/dev/null || echo "(not set)")
+            printf "VM       : %s\n" "${vm_name}"
+            printf "Schedule : %s\n" "${schedule}"
+            printf "Expiry   : %s\n" "${expiry}"
+            printf "Pattern  : %s\n" "${pattern}"
+            ;;
+        disable)
+            local version="${IMT_VERSION:-sonoma}" vm_name=""
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --version) version="$2"; shift 2 ;;
+                    --name)    vm_name="$2"; shift 2 ;;
+                    *) die "Unknown option: $1" ;;
+                esac
+            done
+            [[ -z "${vm_name}" ]] && vm_name="macos-${version}"
+            require_incus
+            incus config unset "${vm_name}" snapshots.schedule 2>/dev/null || true
+            ok "Auto-snapshot disabled for '${vm_name}'"
+            ;;
+        help|--help|-h)
+            echo "Usage: imt vm snapshot auto <set|show|disable> [options]"
+            echo "Run 'imt vm snapshot --help' for details."
+            ;;
+        *)
+            die "Unknown auto subcommand: ${subcmd}" ;;
     esac
 }
 
@@ -1289,15 +1376,215 @@ cmd_version() {
     echo "imt $VERSION"
 }
 
+# ── Cloud sync ────────────────────────────────────────────────────────────────
+
+IMT_BACKUP_DIR="${IMT_BACKUP_DIR:-${HOME}/.local/share/imt/backups}"
+IMT_CLOUD_REMOTE="${IMT_CLOUD_REMOTE:-imt-backups}"
+IMT_CLOUD_PATH="${IMT_CLOUD_PATH:-imt/backups}"
+
+_require_rclone() {
+    if ! command -v rclone >/dev/null 2>&1; then
+        die "rclone is required for cloud sync. Install: https://rclone.org/install/"
+    fi
+}
+
+_remote_configured() {
+    rclone listremotes 2>/dev/null | grep -q "^${IMT_CLOUD_REMOTE}:" 2>/dev/null
+}
+
+cmd_cloud_sync() {
+    local subcmd="${1:-help}"; shift || true
+
+    case "${subcmd}" in
+        push)
+            _require_rclone
+            mkdir -p "${IMT_BACKUP_DIR}"
+            _remote_configured || die "Remote '${IMT_CLOUD_REMOTE}' not configured. Run: imt cloud-sync config"
+            local file_filter="${1:-}"
+            info "Cloud Sync: Push"
+            info "  Local  : ${IMT_BACKUP_DIR}"
+            info "  Remote : ${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}"
+            local count=0
+            for f in "${IMT_BACKUP_DIR}"/*.tar.gz "${IMT_BACKUP_DIR}"/*.tar; do
+                [[ -f "${f}" ]] || continue
+                local filename; filename="$(basename "${f}")"
+                if [[ -n "${file_filter}" ]] && ! printf '%s' "${filename}" | grep -q "${file_filter}"; then
+                    continue
+                fi
+                local size; size="$(stat -c%s "${f}" 2>/dev/null || stat -f%z "${f}" 2>/dev/null || echo 0)"
+                info "  Uploading: ${filename} ($(human_size "${size}"))"
+                rclone copy "${f}" "${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}/" --progress --transfers 1 || {
+                    warn "Failed to upload: ${filename}"; continue
+                }
+                count=$(( count + 1 ))
+            done
+            for f in "${IMT_BACKUP_DIR}"/*.meta; do
+                [[ -f "${f}" ]] || continue
+                rclone copy "${f}" "${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}/" 2>/dev/null || true
+            done
+            if [[ ${count} -eq 0 ]]; then info "No backups to upload"; else ok "Uploaded ${count} backup(s)"; fi
+            ;;
+
+        pull)
+            _require_rclone
+            mkdir -p "${IMT_BACKUP_DIR}"
+            _remote_configured || die "Remote '${IMT_CLOUD_REMOTE}' not configured. Run: imt cloud-sync config"
+            local file_filter="${1:-}"
+            info "Cloud Sync: Pull"
+            info "  Remote : ${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}"
+            info "  Local  : ${IMT_BACKUP_DIR}"
+            if [[ -n "${file_filter}" ]]; then
+                rclone copy "${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}/" "${IMT_BACKUP_DIR}/" \
+                    --include "*${file_filter}*" --progress --transfers 1 || die "Pull failed"
+            else
+                rclone copy "${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}/" "${IMT_BACKUP_DIR}/" \
+                    --progress --transfers 1 || die "Pull failed"
+            fi
+            ok "Pull complete"
+            ;;
+
+        list|ls)
+            _require_rclone
+            _remote_configured || die "Remote '${IMT_CLOUD_REMOTE}' not configured. Run: imt cloud-sync config"
+            bold "Remote Backups: ${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}"
+            printf "  %-40s %-12s %s\n" "FILENAME" "SIZE" "MODIFIED"
+            printf "  %-40s %-12s %s\n" "--------" "----" "--------"
+            rclone lsf "${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}/" --format "psm" 2>/dev/null | \
+            while IFS=';' read -r path size mod; do
+                [[ -n "${path}" ]] || continue
+                [[ "${path}" == *.meta ]] && continue
+                printf "  %-40s %-12s %s\n" "${path}" "${size}" "${mod}"
+            done || info "  No remote backups found"
+            local local_count remote_count
+            local_count="$(find "${IMT_BACKUP_DIR}" -name '*.tar*' 2>/dev/null | wc -l)"
+            remote_count="$(rclone lsf "${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}/" --include '*.tar*' 2>/dev/null | wc -l || echo 0)"
+            info "Local: ${local_count} backups | Remote: ${remote_count} backups"
+            ;;
+
+        config)
+            _require_rclone
+            local cfg_sub="${1:-interactive}"; shift || true
+            case "${cfg_sub}" in
+                show)
+                    bold "Cloud Sync Configuration"
+                    printf "  Remote name : %s\n" "${IMT_CLOUD_REMOTE}"
+                    printf "  Remote path : %s\n" "${IMT_CLOUD_PATH}"
+                    printf "  Local dir   : %s\n" "${IMT_BACKUP_DIR}"
+                    if _remote_configured; then ok "Remote '${IMT_CLOUD_REMOTE}' is configured"
+                    else warn "Remote '${IMT_CLOUD_REMOTE}' is not configured"; fi
+                    ;;
+                s3)
+                    info "Configuring S3-compatible remote..."
+                    rclone config create "${IMT_CLOUD_REMOTE}" s3 provider "AWS" env_auth "false" \
+                        || die "S3 config failed"
+                    ok "S3 remote configured as '${IMT_CLOUD_REMOTE}'"
+                    ;;
+                b2)
+                    info "Configuring Backblaze B2 remote..."
+                    rclone config create "${IMT_CLOUD_REMOTE}" b2 || die "B2 config failed"
+                    ok "B2 remote configured as '${IMT_CLOUD_REMOTE}'"
+                    ;;
+                interactive|setup)
+                    info "Launching rclone interactive config..."
+                    printf "Create a remote named: %s\n" "${IMT_CLOUD_REMOTE}"
+                    rclone config
+                    ;;
+                *)
+                    cat <<EOF
+imt cloud-sync config - Configure cloud storage
+
+Subcommands:
+  show          Show current configuration
+  s3            Configure S3-compatible storage
+  b2            Configure Backblaze B2
+  interactive   Launch rclone interactive config (default)
+
+Environment variables (set in ~/.config/imt/config):
+  IMT_CLOUD_REMOTE   rclone remote name (default: imt-backups)
+  IMT_CLOUD_PATH     Remote path (default: imt/backups)
+  IMT_BACKUP_DIR     Local backup directory
+EOF
+                    ;;
+            esac
+            ;;
+
+        status)
+            _require_rclone
+            bold "Cloud Sync Status"
+            if ! _remote_configured; then
+                warn "Remote '${IMT_CLOUD_REMOTE}' not configured"
+                info "Run: imt cloud-sync config"
+                return 1
+            fi
+            ok "Remote: ${IMT_CLOUD_REMOTE} (configured)"
+            info "Path: ${IMT_CLOUD_PATH}"
+            local local_count local_size remote_count
+            local_count="$(find "${IMT_BACKUP_DIR}" -name '*.tar*' 2>/dev/null | wc -l)"
+            local_size="$(du -sh "${IMT_BACKUP_DIR}" 2>/dev/null | awk '{print $1}' || echo 0)"
+            remote_count="$(rclone lsf "${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}/" --include '*.tar*' 2>/dev/null | wc -l || echo '?')"
+            printf "  Local backups  : %s (%s)\n" "${local_count}" "${local_size}"
+            printf "  Remote backups : %s\n" "${remote_count}"
+            local unsynced=0
+            for f in "${IMT_BACKUP_DIR}"/*.tar.gz "${IMT_BACKUP_DIR}"/*.tar; do
+                [[ -f "${f}" ]] || continue
+                local fname; fname="$(basename "${f}")"
+                if ! rclone lsf "${IMT_CLOUD_REMOTE}:${IMT_CLOUD_PATH}/${fname}" >/dev/null 2>&1; then
+                    unsynced=$(( unsynced + 1 ))
+                fi
+            done
+            if [[ ${unsynced} -gt 0 ]]; then
+                warn "${unsynced} local backup(s) not yet synced"
+                info "Run: imt cloud-sync push"
+            else
+                ok "All local backups synced"
+            fi
+            ;;
+
+        help|--help|-h)
+            cat <<EOF
+imt cloud-sync — sync VM backups to cloud storage
+
+Usage: imt cloud-sync <subcommand> [options]
+
+Subcommands:
+  push [filter]     Upload local backups to remote
+  pull [filter]     Download remote backups to local
+  list              List remote backups
+  config [type]     Configure remote storage (s3, b2, interactive)
+  status            Show sync status
+
+Options:
+  filter   Optional filename filter (e.g. VM name)
+
+Environment (set in ~/.config/imt/config):
+  IMT_CLOUD_REMOTE   rclone remote name (default: imt-backups)
+  IMT_CLOUD_PATH     Remote path (default: imt/backups)
+  IMT_BACKUP_DIR     Local backup directory
+
+Examples:
+  imt cloud-sync config s3
+  imt cloud-sync push
+  imt cloud-sync push macos-sonoma
+  imt cloud-sync pull
+  imt cloud-sync list
+  imt cloud-sync status
+EOF
+            ;;
+
+        *) die "Unknown cloud-sync subcommand: ${subcmd}. Run: imt cloud-sync help" ;;
+    esac
+}
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 main() {
     local cmd="${1:-help}"; shift || true
     case "$cmd" in
-        image)          cmd_image  "$@" ;;
-        vm)             cmd_vm     "$@" ;;
-        doctor)         cmd_doctor "$@" ;;
-        config)         cmd_config "$@" ;;
+        image)          cmd_image      "$@" ;;
+        vm)             cmd_vm         "$@" ;;
+        cloud-sync)     cmd_cloud_sync "$@" ;;
+        doctor)         cmd_doctor     "$@" ;;
+        config)         cmd_config     "$@" ;;
         version|--version) cmd_version ;;
         help|--help|-h) usage_global ;;
         *) err "Unknown command: $cmd"; usage_global ;;
