@@ -157,8 +157,11 @@ func (v *VM) startQEMU() error {
 	format := v.provider.ImageFormat()
 
 	// Create a throwaway overlay so the base image is never modified.
-	// Each VM start gets a fresh disk state; the overlay is deleted on Stop.
-	vmImage := baseImage + ".overlay.qcow2"
+	// Include the PID in the filename so concurrent VM instances don't
+	// collide — two mounts of the same distro would otherwise share the
+	// same overlay path and the second Start would delete the first VM's
+	// running disk.
+	vmImage := fmt.Sprintf("%s.overlay.%d.qcow2", baseImage, os.Getpid())
 	_ = os.Remove(vmImage) // remove any leftover from a previous run
 	if out, err := exec.Command("qemu-img", "create",
 		"-f", "qcow2",

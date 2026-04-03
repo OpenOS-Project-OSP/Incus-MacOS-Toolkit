@@ -31,6 +31,8 @@ const (
 	portFTP = uint16(2121)
 
 	// shareName is the exported share / NFS path name.
+	// Exported as ShareName() for use by callers that need the Finder
+	// mountpoint (/Volumes/<shareName> on macOS).
 	shareName = "linuxfs"
 )
 
@@ -61,7 +63,13 @@ func HostFwds(backend Backend) []string {
 	case BackendSMB:
 		return []string{fmt.Sprintf("tcp::%d-:%d", portSMB, portSMB)}
 	case BackendAFP:
-		return []string{fmt.Sprintf("tcp::%d-:%d", portAFP, portAFP)}
+		// Forward both AFP and NFS ports: the setup script falls back to
+		// NFS if netatalk is unavailable, so both must be reachable.
+		return []string{
+			fmt.Sprintf("tcp::%d-:%d", portAFP, portAFP),
+			fmt.Sprintf("tcp::%d-:%d", portNFS, portNFS),
+			"tcp::20048-:20048",
+		}
 	case BackendFTP:
 		// FTP control port + passive data range (40000–40004, 5 ports).
 		// Must match pasv_min_port/pasv_max_port in the vsftpd config below.
@@ -110,6 +118,10 @@ type MountOptions struct {
 	ListenIP string
 }
 
+// ShareName returns the share/export name used by all backends.
+// On macOS, AFP and NFS shares appear under /Volumes/<ShareName()>.
+func ShareName() string { return shareName }
+
 // Setup mounts the filesystem and starts the share server inside the VM.
 // Returns the host-side share URL.
 func Setup(v VMRunner, opts MountOptions) (shareURL string, err error) {
@@ -122,8 +134,19 @@ func Setup(v VMRunner, opts MountOptions) (shareURL string, err error) {
 		return "", fmt.Errorf("in-VM setup: %w\nOutput:\n%s", err, out)
 	}
 
-	// Wait for the share server port to open inside the VM (skip for sshfs/mount-only).
-	if sharePort != 0 {
+	// Wait for the share server port to open inside the VM.
+	// AFP may fall back to NFS at runtime if netatalk is unavailable;
+	// poll both ports and update the backend if NFS wins.
+	if opts.Backend == BackendAFP {
+		afpErr := v.WaitForPort(portAFP, 15*time.Second)
+		if afpErr != nil {
+			if nfsErr := v.WaitForPort(portNFS, 15*time.Second); nfsErr != nil {
+				return "", fmt.Errorf("neither AFP (%v) nor NFS (%v) started", afpErr, nfsErr)
+			}
+			// netatalk was unavailable; NFS is serving instead.
+			opts.Backend = BackendNFS
+		}
+	} else if sharePort != 0 {
 		if err := v.WaitForPort(sharePort, 30*time.Second); err != nil {
 			return "", fmt.Errorf("share server did not start: %w", err)
 		}
@@ -234,7 +257,8 @@ mount -t zfs "$ZFS_POOL" %s
 		b.WriteString(buildSMBSetup(opts))
 	case BackendAFP:
 		// AFP (netatalk) — macOS default. Falls back to NFS if netatalk unavailable.
-		sharePort = portAFP
+		// sharePort is set to 0 so Setup polls both AFP and NFS ports below.
+		sharePort = 0
 		b.WriteString(buildAFPSetup(opts))
 	case BackendFTP:
 		sharePort = portFTP
@@ -279,9 +303,9 @@ ExecStart=/usr/sbin/rpc.mountd --manage-gids -p 20048
 DROPIN
     systemctl daemon-reload
 elif [ -f /etc/conf.d/nfs ]; then
-    # Alpine OpenRC
-    grep -q 'MOUNTD_PORT' /etc/conf.d/nfs 2>/dev/null || \
-        echo 'MOUNTD_PORT=20048' >> /etc/conf.d/nfs
+    # Alpine OpenRC: the variable is OPTS_RPC_MOUNTD, not MOUNTD_PORT.
+    grep -q 'OPTS_RPC_MOUNTD' /etc/conf.d/nfs 2>/dev/null || \
+        echo 'OPTS_RPC_MOUNTD="-p 20048"' >> /etc/conf.d/nfs
 fi
 `)
 	// listenIP restricts which client IP the NFS export allows.

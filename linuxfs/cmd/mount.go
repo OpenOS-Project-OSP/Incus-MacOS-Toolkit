@@ -192,6 +192,13 @@ Flags:
 			fmt.Printf("Opening share in Finder: %s\n", shareURL)
 			if err := mount.AutoMount(shareURL, ""); err != nil {
 				fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
+			} else {
+				// Detect the Finder mountpoint so unmount can eject it.
+				// macOS mounts AFP/NFS shares under /Volumes/<sharename>.
+				candidate := "/Volumes/" + mount.ShareName()
+				if _, err := os.Stat(candidate); err == nil {
+					*mountPoint = candidate
+				}
 			}
 		} else {
 			fmt.Printf("Connect to: %s\n", shareURL)
