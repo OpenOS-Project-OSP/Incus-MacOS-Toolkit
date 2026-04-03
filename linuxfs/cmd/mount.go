@@ -224,6 +224,8 @@ Flags:
 		VMPid:      v.Pid(),
 		SSHPort:    v.SSHPort,
 		VMUser:     provider.DefaultUser(),
+		LUKS:       *luks,
+		LVM:        *lvm,
 	})
 	if err := saveMounts(records); err != nil {
 		fmt.Fprintf(os.Stderr, "WARNING: could not save mount state: %v\n", err)
@@ -344,13 +346,18 @@ Flags:
 		}
 	}
 
-	// Run in-VM teardown before killing the VM: stop the share server and
-	// unmount the filesystem so dirty page-cache data is flushed and the
-	// journal is closed cleanly. Without this, killing QEMU with a rw mount
-	// active leaves the filesystem in an unclean state.
+	// Run in-VM teardown before killing the VM: stop the share server,
+	// unmount the filesystem, close any LUKS container, and deactivate any
+	// LVM volume group. This ensures dirty page-cache data is flushed and
+	// the journal is closed cleanly before QEMU is killed.
 	if rec != nil && rec.SSHPort > 0 && rec.VMUser != "" {
 		fmt.Println("Running in-VM teardown ...")
-		script := mount.InVMTeardownScript(mount.Backend(rec.Backend))
+		teardownOpts := mount.MountOptions{
+			Backend: mount.Backend(rec.Backend),
+			LUKS:    rec.LUKS,
+			LVM:     rec.LVM,
+		}
+		script := mount.InVMTeardownScript(teardownOpts)
 		keyPath := vmKeyPath(flagDataDir)
 		if out, err := vm.RunScriptOnPort(rec.SSHPort, rec.VMUser, keyPath, script); err != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: in-VM teardown: %v\nOutput:\n%s\n", err, out)

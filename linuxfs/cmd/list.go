@@ -20,6 +20,12 @@ type MountRecord struct {
 	// VMUser is the SSH login user inside the VM (provider.DefaultUser()).
 	// Needed by runUnmount to SSH in and run the in-VM teardown script.
 	VMUser string `json:"vm_user,omitempty"`
+	// LUKS is the in-VM device opened as a LUKS container, if any.
+	// Persisted so runUnmount can close it during teardown.
+	LUKS string `json:"luks,omitempty"`
+	// LVM is the "vgname/lvname" activated for this mount, if any.
+	// Persisted so runUnmount can deactivate the volume group during teardown.
+	LVM string `json:"lvm,omitempty"`
 }
 
 func stateFile() (string, error) {

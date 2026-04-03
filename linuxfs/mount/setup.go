@@ -526,11 +526,11 @@ func InVMUnmountScript(opts MountOptions) string {
 	})
 }
 
-// InVMTeardownScript returns a script that stops the share server for the
-// given backend and unmounts /mnt/linuxfs. Used by the unmount subcommand
-// where only the backend name is known (LUKS/LVM state is not persisted).
-func InVMTeardownScript(backend Backend) string {
-	return buildTeardownScript(MountOptions{Backend: backend})
+// InVMTeardownScript returns a script that stops the share server, unmounts
+// /mnt/linuxfs, closes any LUKS container, and deactivates any LVM volume
+// group. Used by the unmount subcommand with state loaded from MountRecord.
+func InVMTeardownScript(opts MountOptions) string {
+	return buildTeardownScript(opts)
 }
 
 // buildTeardownScript returns the shell script that stops the share server
