@@ -45,14 +45,16 @@ Commands:
   cloud-sync  Sync VM backups to cloud storage via rclone
   demo        Manage a local incus-demo-server instance
   winesapos   Fetch, import, and launch winesapOS gaming VMs
+  publish         Create, list, and delete Incus images from macOS VMs
   tui             Launch interactive terminal UI (requires dialog or whiptail)
   dashboard       Launch web monitoring dashboard (requires socat/ncat/python3)
   profiles        Manage Incus profiles (list, install, diff, apply)
   setup-rootless  Configure the system for rootless VM operation via incus-user
   update          Check for and install imt updates
-  doctor      Check prerequisites
-  config      Show or initialise configuration
-  version     Print version
+  doctor          Check prerequisites
+  config          Show or initialise configuration (show|init|edit|path)
+  completion      Generate shell completion script (bash|zsh|fish)
+  version         Print version
 
 Run 'imt <command> help' for command-specific usage.
 EOF
@@ -1845,7 +1847,10 @@ cmd_config() {
             [[ -f "$IMT_CONFIG_FILE" ]] || init_config
             "${EDITOR:-vi}" "$IMT_CONFIG_FILE"
             ;;
-        *) die "Unknown config subcommand: $subcmd (show|init|edit)" ;;
+        path)
+            printf '%s\n' "$IMT_CONFIG_FILE"
+            ;;
+        *) die "Unknown config subcommand: $subcmd (show|init|edit|path)" ;;
     esac
 }
 
@@ -2863,6 +2868,53 @@ _imt_fetch_release() {
     || { warn "Could not reach GitHub API"; return 1; }
 }
 
+# ── publish ───────────────────────────────────────────────────────────────────
+
+cmd_publish() {
+    local subcmd="${1:-help}"; shift || true
+    case "$subcmd" in
+        create)
+            # Delegate to vm export which publishes the VM as an Incus image
+            cmd_vm_export "$@"
+            ;;
+        list|ls)
+            require_incus
+            info "Published imt images:"
+            incus image list --format table 2>/dev/null | grep -E "ALIAS|macos" || \
+                info "No published images found. Use: imt publish create --name VM"
+            ;;
+        delete|rm)
+            local alias_name="${1:-}"
+            [[ -n "$alias_name" ]] || die "Usage: imt publish delete ALIAS"
+            require_incus
+            info "Deleting image '$alias_name' ..."
+            incus image delete "$alias_name"
+            ok "Deleted: $alias_name"
+            ;;
+        help|--help|-h)
+            cat <<EOF
+imt publish — create and manage Incus images from macOS VMs
+
+Usage:
+  imt publish create [--name VM] [--alias ALIAS]
+  imt publish list
+  imt publish delete ALIAS
+
+Subcommands:
+  create    Publish a VM as a reusable Incus image (wraps: imt vm export)
+  list      List published macOS images
+  delete    Delete a published image by alias
+
+Examples:
+  imt publish create --name macos-sonoma --alias macos/golden
+  imt publish list
+  imt publish delete macos/golden
+EOF
+            ;;
+        *) die "Unknown publish subcommand: $subcmd. Run: imt publish help" ;;
+    esac
+}
+
 cmd_update() {
     local subcmd="${1:-check}"; shift || true
 
@@ -3231,6 +3283,107 @@ EOF
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
+# ── shell completion ──────────────────────────────────────────────────────────
+
+cmd_completion() {
+    local shell_type="${1:-bash}"
+    case "$shell_type" in
+        bash)
+            cat <<'BASH_COMPLETION'
+# imt bash completion
+_imt_completion() {
+    local cur prev words
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    words="${COMP_WORDS[*]}"
+
+    local top_cmds="image vm cloud-sync demo winesapos tui dashboard profiles publish setup-rootless update doctor config completion version help"
+
+    if [[ $COMP_CWORD -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "$top_cmds" -- "$cur") )
+        return
+    fi
+
+    case "$prev" in
+        vm)
+            COMPREPLY=( $(compgen -W "create start stop status console shell snapshot export import fleet monitor net usb gpu template backup restore assemble delete list upgrade disk help" -- "$cur") )
+            ;;
+        publish)
+            COMPREPLY=( $(compgen -W "create list delete help" -- "$cur") )
+            ;;
+        profiles)
+            COMPREPLY=( $(compgen -W "list show install diff apply remove help" -- "$cur") )
+            ;;
+        config)
+            COMPREPLY=( $(compgen -W "show init edit path" -- "$cur") )
+            ;;
+        update)
+            COMPREPLY=( $(compgen -W "check install" -- "$cur") )
+            ;;
+        completion)
+            COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
+            ;;
+    esac
+}
+complete -F _imt_completion imt
+BASH_COMPLETION
+            ;;
+        zsh)
+            cat <<'ZSH_COMPLETION'
+#compdef imt
+_imt() {
+    local state
+    _arguments '1: :->cmd' '*: :->args'
+    case $state in
+        cmd)
+            _values 'command' \
+                'image[Manage macOS VM images]' \
+                'vm[Manage macOS VMs]' \
+                'cloud-sync[Sync backups to cloud storage]' \
+                'demo[Manage incus-demo-server]' \
+                'winesapos[Manage winesapOS VMs]' \
+                'tui[Launch terminal UI]' \
+                'dashboard[Launch web dashboard]' \
+                'profiles[Manage Incus profiles]' \
+                'publish[Create and manage Incus images]' \
+                'setup-rootless[Configure rootless operation]' \
+                'update[Check for and install updates]' \
+                'doctor[Check prerequisites]' \
+                'config[Manage configuration]' \
+                'completion[Generate shell completion]' \
+                'version[Show version]' \
+                'help[Show help]'
+            ;;
+        args)
+            case ${words[2]} in
+                vm) _values 'subcommand' create start stop status console shell snapshot export import fleet monitor net usb gpu template backup restore assemble delete list upgrade disk help ;;
+                publish) _values 'subcommand' create list delete help ;;
+                profiles) _values 'subcommand' list show install diff apply remove help ;;
+                config) _values 'subcommand' show init edit path ;;
+            esac
+            ;;
+    esac
+}
+_imt
+ZSH_COMPLETION
+            ;;
+        fish)
+            cat <<'FISH_COMPLETION'
+# imt fish completion
+set -l top_cmds image vm cloud-sync demo winesapos tui dashboard profiles publish setup-rootless update doctor config completion version help
+complete -c imt -f -n '__fish_use_subcommand' -a "$top_cmds"
+complete -c imt -f -n '__fish_seen_subcommand_from vm'      -a 'create start stop status console shell snapshot export import fleet monitor net usb gpu template backup restore assemble delete list upgrade disk help'
+complete -c imt -f -n '__fish_seen_subcommand_from publish'  -a 'create list delete help'
+complete -c imt -f -n '__fish_seen_subcommand_from profiles' -a 'list show install diff apply remove help'
+complete -c imt -f -n '__fish_seen_subcommand_from config'   -a 'show init edit path'
+FISH_COMPLETION
+            ;;
+        *)
+            die "Unknown shell: $shell_type. Supported: bash, zsh, fish"
+            ;;
+    esac
+}
+
 main() {
     local cmd="${1:-help}"; shift || true
     case "$cmd" in
@@ -3242,10 +3395,12 @@ main() {
         tui)            cmd_tui        "$@" ;;
         dashboard)      cmd_dashboard  "$@" ;;
         profiles)       cmd_profiles   "$@" ;;
+        publish)        cmd_publish    "$@" ;;
         setup-rootless) cmd_setup_rootless "$@" ;;
         update)         cmd_update     "$@" ;;
         doctor)         cmd_doctor     "$@" ;;
         config)         cmd_config     "$@" ;;
+        completion)     cmd_completion "$@" ;;
         version|--version) cmd_version ;;
         help|--help|-h) usage_global ;;
         *) err "Unknown command: $cmd"; usage_global ;;
