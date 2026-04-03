@@ -279,7 +279,7 @@ grep -qF '%s' /etc/exports 2>/dev/null || \
 
 # Load nfsd kernel module explicitly (required on cloud kernels).
 modprobe nfsd 2>/dev/null || true
-modprobe nfs 2>/dev/null || true
+modprobe nfs  2>/dev/null || true
 
 # Start / reload NFS server.
 if command -v rc-service >/dev/null 2>&1; then
@@ -287,12 +287,15 @@ if command -v rc-service >/dev/null 2>&1; then
     rc-service nfs start 2>/dev/null || rc-service nfs restart 2>/dev/null || true
 elif command -v systemctl >/dev/null 2>&1; then
     systemctl enable --now rpcbind 2>/dev/null || true
+    # Restart mountd first so it picks up the new port from nfs.conf,
+    # then restart the full nfs-kernel-server stack.
+    systemctl restart nfs-mountd 2>/dev/null || true
     systemctl restart nfs-kernel-server 2>/dev/null || \
-    systemctl restart nfs-server 2>/dev/null || true
+        systemctl restart nfs-server 2>/dev/null || true
 fi
 exportfs -ra 2>/dev/null || true
-# Verify NFS is listening.
-ss -tlnp 2>/dev/null | grep ':2049' || netstat -tlnp 2>/dev/null | grep ':2049' || true
+# Verify both NFS data port and mountd are listening.
+ss -tlnp 2>/dev/null | grep -E ':2049|:20048' || true
 `, vmMountPoint, vmMountPoint, listenIP, roFlag)
 	return b.String()
 }
