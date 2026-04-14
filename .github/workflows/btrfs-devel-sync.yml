@@ -10,6 +10,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: read  # Added permission for actions
 
 jobs:
   sync:
