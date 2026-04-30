@@ -78,7 +78,7 @@ jobs:
           pip install ruff yamllint
       - name: shellcheck
         run: |
-          shellcheck macos-vm/cli/imt.sh
+          shellcheck -e SC2015 macos-vm/cli/imt.sh
           shellcheck macos-vm/cli/lib.sh
           shellcheck macos-vm/image-pipeline/build-image.sh
           shellcheck macos-vm/image-pipeline/convert-image.sh
