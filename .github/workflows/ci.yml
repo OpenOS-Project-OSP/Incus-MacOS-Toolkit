@@ -321,4 +321,3 @@ jobs:
           # Unload nfsd kernel module so the host kernel doesn't handle NFS frames
           sudo modprobe -r nfsd 2>/dev/null || true
           # Confirm port 2049 is free on the host
-          sudo netstat -tuln | grep 2049 || true
