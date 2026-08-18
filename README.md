@@ -1,7 +1,8 @@
 [update-readmes]   Mode: rewrite — migrating to template structure...
 # Incus-MacOS-Toolkit
 
-[![Built with Ona](https://ona.com/build-with-ona.svg)](https://app.ona.com/#https://github.com/Interested-Deving-1896/Incus-MacOS-Toolkit)
+[![Built with Ona](https://ona.com/build-with-ona.svg)](https://app.ona.com/#https://github.com/OpenOS-Project-OSP/Incus-MacOS-Toolkit) [![KDE Eco](https://img.shields.io/badge/KDE%20Eco-certified-brightgreen?logo=kde&logoColor=white&style=flat-square)](https://eco.kde.org/) [![Blue Angel](https://img.shields.io/badge/Blue%20Angel-DE--UZ%20215-0055a4?style=flat-square)](https://www.blauer-engel.de/en/certification/criteria) [![Energy](https://api.green-coding.io/v1/ci/badge/get?repo=OpenOS-Project-OSP%2FIncus-MacOS-Toolkit&branch=main&workflow=eco-audit.yml)](https://metrics.green-coding.io/ci-index.html)
+
 
 <!-- AI:start:what-it-does -->
 This project provides a unified toolkit for macOS users to address cross-platform compatibility and virtualization needs. It enables macOS KVM virtualization using QEMU, facilitates access to Linux filesystems on macOS and Windows, offers compatibility tools for macOS and Linux interoperability, and implements a hybrid BTRFS+DwarFS storage framework. It is designed for developers and system administrators working in mixed macOS and Linux environments.
